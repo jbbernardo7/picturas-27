@@ -1,4 +1,3 @@
-
 var express = require("express");
 var router = express.Router();
 const axios = require("axios");
@@ -43,6 +42,8 @@ const {
   post_image,
   delete_image,
   copy_image,
+  init_video,
+  complete_video,
 } = require("../utils/imageStorage");
 
 const {
@@ -496,6 +497,11 @@ async function deleteProjectAndResources(userId, projectId) {
     project["imgs"].remove(img);
   }
 
+  // apagar vídeos
+  for (const v of project.videos || []) {
+    await delete_image(userId, projectId, "src", v.og_video_key);
+  }
+
   // apagar resultados
   const results = await Result.getAll(userId, projectId);
   for (let r of results) {
@@ -763,6 +769,7 @@ router.get("/:user", (req, res, next) => {
         ans.push({
           _id: p._id,
           name: p.name,
+          type: p.type || "image",
           version: p.version
         });
       }
@@ -813,8 +820,10 @@ router.get("/:user/:project", checkSharePermission, async (req, res, next) => {
       const response = {
         _id: project._id,
         name: project.name,
+        type: project.type || "image",
         tools: project.tools,
         imgs: [],
+        videos: [],
         version: project.version,
       };
 
@@ -835,6 +844,28 @@ router.get("/:user/:project", checkSharePermission, async (req, res, next) => {
           });
         } catch (_) {
           res.status(404).jsonp(`Error acquiring image's url`);
+          return;
+        }
+      }
+
+      for (const v of project.videos || []) {
+        try {
+          const resp = await get_image_public_url(
+            req.params.user,
+            req.params.project,
+            "src",
+            v.og_video_key
+          );
+          response.videos.push({
+            _id: v._id,
+            name: v.name,
+            size: v.size,
+            contentType: v.content_type,
+            status: v.status,
+            url: resp.data.url,
+          });
+        } catch (_) {
+          res.status(404).jsonp(`Error acquiring video's url`);
           return;
         }
       }
@@ -1001,9 +1032,16 @@ router.get("/:user/:project/advanced_tools", checkSharePermission, (req, res, ne
 
 // Create new project
 router.post("/:user", (req, res, next) => {
+  // "image" (default) or "video"; fixed at creation
+  const type = req.body.type ?? "image";
+  if (!["image", "video"].includes(type)) {
+    return res.status(400).jsonp("type must be 'image' or 'video'");
+  }
+
   const project = {
     name: req.body.name,
     user_id: req.params.user,
+    type,
     imgs: [],
     tools: [],
   };
@@ -1179,6 +1217,11 @@ router.post(
 
     Project.getOne(req.params.user, req.params.project)
       .then(async (project) => {
+        if (project.type === "video") {
+          res.status(400).jsonp("Video projects can't contain images.");
+          return;
+        }
+
         const same_name_img = project.imgs.filter(
           (i) => path.basename(i.og_uri) == req.file.originalname
         );
@@ -1278,6 +1321,12 @@ router.post("/:user/:project/tool", checkSharePermission, requireEditPermission,
       // Get project and insert new tool
       Project.getOne(req.params.user, req.params.project)
         .then(async (project) => {
+          if (!toolAllowedFor(project.type, req.body.procedure)) {
+            return res
+              .status(400)
+              .jsonp(`Tool '${req.body.procedure}' can't be used in a ${project.type || "image"} project`);
+          }
+
           const tool = { position: project.tools.length, ...req.body };
           project.tools.push(tool);
 
@@ -1329,6 +1378,15 @@ router.post(
   (req, res) => {
     Project.getOne(req.params.user, req.params.project)
       .then(async (project) => {
+        if (
+          Array.isArray(req.body) &&
+          req.body.some((t) => !toolAllowedFor(project.type, t?.procedure))
+        ) {
+          return res
+            .status(400)
+            .jsonp(`A tool in the list can't be used in a ${project.type || "image"} project`);
+        }
+
         project.tools = [];
 
         for (let t of req.body) {
@@ -2562,5 +2620,199 @@ router.post(
     }
   }
 );
+
+// ================== VIDEO PROJECTS ==================
+
+// A video project holds at most this many videos. The schema already supports
+// several, so raising this later is a one-line change.
+const MAX_VIDEOS_PER_PROJECT = 1;
+
+// Procedures that only make sense for video projects. Empty until the first
+// video tool exists; add the procedure names here when they do.
+const VIDEO_TOOLS = [];
+
+function toolAllowedFor(type, procedure) {
+  return type === "video"
+    ? VIDEO_TOOLS.includes(procedure)
+    : !VIDEO_TOOLS.includes(procedure);
+}
+
+function storageError(res, err, fallback) {
+  const status = err.response?.status || 500;
+  const data = err.response?.data || fallback;
+  console.error("[video]", status, fallback, err.message);
+  return res.status(status).jsonp(data);
+}
+
+// Start a video upload. Only video projects with room for another video.
+router.post(
+  "/:user/:project/video/init",
+  requireOwner,
+  checkSharePermission,
+  requireEditPermission,
+  enforcePresenceLimit,
+  async (req, res) => {
+    try {
+      const project = await Project.getOne(req.params.user, req.params.project);
+      if (!project) return res.status(404).jsonp("Project not found");
+      if (project.type !== "video") {
+        return res.status(400).jsonp("This is not a video project.");
+      }
+      if ((project.videos || []).length >= MAX_VIDEOS_PER_PROJECT) {
+        return res
+          .status(409)
+          .jsonp("This project already has the maximum number of videos.");
+      }
+
+      const { contentType, size } = req.body || {};
+      const resp = await init_video(
+        req.params.user,
+        req.params.project,
+        contentType,
+        Number(size)
+      );
+      return res.status(200).jsonp(resp.data);
+    } catch (err) {
+      if (err.name === "CastError") return res.status(404).jsonp("Project not found");
+      return storageError(res, err, "Error starting video upload");
+    }
+  }
+);
+
+// Finish the upload and attach the video to the project in one step, so a
+// video can't be registered unless its upload really completed.
+router.post(
+  "/:user/:project/video/complete",
+  requireOwner,
+  checkSharePermission,
+  requireEditPermission,
+  enforcePresenceLimit,
+  async (req, res) => {
+    const { user, project: projectId } = req.params;
+    const { key, uploadId, parts } = req.body || {};
+    const name = path.basename(String(req.body?.name || "")).slice(0, 255);
+
+    // key must be exactly <projectId>/src/<file>
+    const segs = typeof key === "string" ? key.split("/") : [];
+    if (
+      segs.length !== 3 ||
+      segs[0] !== projectId ||
+      segs[1] !== "src" ||
+      segs[2].includes("..")
+    ) {
+      return res.status(403).jsonp("Key does not belong to this project.");
+    }
+    if (!name) return res.status(400).jsonp("A file name is required.");
+    if (typeof uploadId !== "string" || !Array.isArray(parts)) {
+      return res.status(400).jsonp("uploadId and parts are required.");
+    }
+    const fileKey = segs[2];
+
+    try {
+      const project = await Project.getOne(user, projectId);
+      if (!project) return res.status(404).jsonp("Project not found");
+      if (project.type !== "video") {
+        return res.status(400).jsonp("This is not a video project.");
+      }
+      if ((project.videos || []).length >= MAX_VIDEOS_PER_PROJECT) {
+        return res
+          .status(409)
+          .jsonp("This project already has the maximum number of videos.");
+      }
+
+      // The bucket is derived here, never taken from the client.
+      const done = await complete_video(`user-${user}`, key, uploadId, parts);
+
+      const updated = await Project.addVideo(
+        user,
+        projectId,
+        {
+          name,
+          og_video_key: fileKey,
+          content_type: mime.lookup(fileKey) || "video/mp4",
+          size: done.data?.size ?? 0,
+        },
+        MAX_VIDEOS_PER_PROJECT
+      );
+
+      if (!updated) {
+        // Lost a race (project deleted, or filled by a concurrent upload).
+        try {
+          await delete_image(user, projectId, "src", fileKey);
+        } catch (_) {}
+        return res
+          .status(409)
+          .jsonp("Could not attach the video to the project.");
+      }
+
+      const video = updated.videos[updated.videos.length - 1];
+      res.set("X-Project-Version", String(updated.version));
+      return res.status(201).jsonp({
+        _id: video._id,
+        name: video.name,
+        size: video.size,
+        contentType: video.content_type,
+        status: video.status,
+      });
+    } catch (err) {
+      if (err.name === "CastError") return res.status(404).jsonp("Project not found");
+      return storageError(res, err, "Error completing video upload");
+    }
+  }
+);
+
+// Remove a video from a project.
+router.delete(
+  "/:user/:project/video/:video",
+  requireOwner,
+  checkSharePermission,
+  requireEditPermission,
+  enforcePresenceLimit,
+  requireProjectVersion,
+  async (req, res) => {
+    try {
+      const project = await Project.getOne(req.params.user, req.params.project);
+      if (!project) return res.status(404).jsonp("Project not found");
+
+      const video = (project.videos || []).find(
+        (v) => String(v._id) === String(req.params.video)
+      );
+      if (!video) return res.status(404).jsonp("Video not found");
+
+      const fileKey = video.og_video_key;
+      project.videos.pull(video._id);
+
+      // Database first: if the version check fails nothing has been lost.
+      const updated = await Project.updateIfVersion(
+        req.params.user,
+        req.params.project,
+        project,
+        req.expectedVersion
+      );
+
+      if (!updated) {
+        const fresh = await Project.getOne(req.params.user, req.params.project);
+        return res.status(409).jsonp({
+          message: "Project version conflict",
+          serverVersion: fresh?.version ?? null,
+        });
+      }
+
+      try {
+        await delete_image(req.params.user, req.params.project, "src", fileKey);
+      } catch (err) {
+        console.error("[video] object delete failed:", fileKey, err.message);
+      }
+
+      res.set("X-Project-Version", String(updated.version));
+      return res.sendStatus(204);
+    } catch (err) {
+      if (err.name === "CastError") return res.status(404).jsonp("Project not found");
+      return storageError(res, err, "Error deleting video");
+    }
+  }
+);
+
+// ================== END VIDEO PROJECTS ==================
 
 module.exports = { router, process_msg };

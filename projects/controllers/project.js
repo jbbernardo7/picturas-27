@@ -89,3 +89,18 @@ module.exports.updateRaw = async (user_id, project_id, update) => {
   ).exec();
 };
 
+// Adiciona um vídeo (atómico) apenas a um projeto do tipo "video" que ainda tenha espaço.
+// Sem pré-condição de versão: um upload pode demorar minutos e não deve ser rejeitado
+// só porque a versão mudou entretanto. A versão é incrementada na mesma.
+module.exports.addVideo = async (user_id, project_id, video, maxVideos) => {
+  return await Project.findOneAndUpdate(
+    {
+      user_id: user_id,
+      _id: project_id,
+      type: "video",
+      $expr: { $lt: [{ $size: { $ifNull: ["$videos", []] } }, maxVideos] },
+    },
+    { $push: { videos: video }, $inc: { version: 1 } },
+    { new: true }
+  ).exec();
+};

@@ -1,5 +1,6 @@
 const s3 = require("./s3Client");
 const createBucket = require("./createBucket");
+const { toPublicUrl } = require("./getPresignedUrl");
 const { v4: uuidv4 } = require("uuid");
 
 const VIDEO_TYPES = { "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov" };
@@ -34,8 +35,7 @@ async function signPart(bucket, key, uploadId, partNumber) {
   const url = await s3.getSignedUrlPromise("uploadPart", {
     Bucket: bucket, Key: key, UploadId: uploadId, PartNumber: partNumber, Expires: 3600,
   });
-  const internal = `http://${process.env.S3_ENDPOINT || "seaweedfs:9000"}`;
-  return url.replace(internal, process.env.FRONTEND_URL + "/s3");
+  return toPublicUrl(url);
 }
 
 async function complete(bucket, key, uploadId, parts) {
@@ -46,12 +46,13 @@ async function complete(bucket, key, uploadId, parts) {
     await abort(bucket, key, uploadId);
     throw fail(413, "Vídeo excede o tamanho máximo.");
   }
-  return s3
+  const done = await s3
     .completeMultipartUpload({
       Bucket: bucket, Key: key, UploadId: uploadId,
       MultipartUpload: { Parts: parts }, // [{ PartNumber, ETag }]
     })
     .promise();
+  return { ...done, size: total };
 }
 
 function abort(bucket, key, uploadId) {

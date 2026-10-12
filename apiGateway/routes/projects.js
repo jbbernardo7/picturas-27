@@ -860,4 +860,259 @@ router.post("/:user/:project/dirty", auth.checkToken, (req, res) => {
 
 // ================== END PRESENCE ==================
 
+// ================== VIDEO UPLOAD (multipart, direct to storage) ==================
+// init, complete and delete now go through the projects service (it knows the
+// project type and records the video). sign, abort and url still go straight
+// to img_storage, because they don't need any project knowledge.
+
+// img_storage speaks plain HTTP on the internal Docker network.
+const videoStorageURL = process.env.IMG_STORAGE_URL || "http://img_storage:11000";
+
+const VIDEO_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const VIDEO_FILE_NAME = /^[A-Za-z0-9._-]{1,200}$/;
+const VIDEO_MAX_PARTS = 10000;
+
+function videoReject(res, status, message) {
+  return res.status(status).jsonp({ error: message });
+}
+
+// auth.checkToken skips the "token user == URL user" comparison when ?share=
+// is present. Video management is owner-only, so enforce the match here.
+function requireVideoOwner(req, res, next) {
+  const { user, project } = req.params;
+  if (req.authUserId !== user) {
+    return videoReject(res, 403, "Only the project owner can manage videos.");
+  }
+  if (!VIDEO_ID.test(user) || !VIDEO_ID.test(project)) {
+    return videoReject(res, 400, "Invalid user or project id.");
+  }
+  next();
+}
+
+// sign / complete / abort receive bucket + key + uploadId from the client.
+// Make sure they point inside this user's bucket and this project's prefix.
+function requireOwnVideoUpload(req, res, next) {
+  const { bucket, key, uploadId } = req.body || {};
+  const { user, project } = req.params;
+
+  if (bucket !== `user-${user}`) {
+    return videoReject(res, 403, "Bucket does not belong to this user.");
+  }
+  if (
+    typeof key !== "string" ||
+    !key.startsWith(`${project}/`) ||
+    key.includes("..")
+  ) {
+    return videoReject(res, 403, "Key does not belong to this project.");
+  }
+  if (typeof uploadId !== "string" || !uploadId) {
+    return videoReject(res, 400, "Missing uploadId.");
+  }
+  next();
+}
+
+async function forwardVideo(res, call) {
+  try {
+    const r = await call();
+    res.status(r.status).jsonp(r.data);
+  } catch (err) {
+    const status = err.response?.status || 502;
+    const data = err.response?.data || { error: "Storage service unavailable" };
+    console.error("[API-GW][video]", status, err.message);
+    res.status(status).jsonp(data);
+  }
+}
+
+/**
+ * Start a multipart upload (video projects only; checked by the projects service).
+ * @body { contentType, size }
+ * @returns { bucket, key, uploadId, partSize, partCount }
+ */
+router.post(
+  "/:user/:project/video/init",
+  auth.checkToken,
+  requireVideoOwner,
+  (req, res) => {
+    const { contentType, size } = req.body || {};
+    axios
+      .post(
+        projectsURL + `${req.params.user}/${req.params.project}/video/init`,
+        { contentType, size },
+        {
+          httpsAgent,
+          headers: {
+            Authorization: req.headers["authorization"],
+            "X-Caller-Id": req.authUserId,
+          },
+        }
+      )
+      .then((resp) => res.status(200).jsonp(resp.data))
+      .catch((err) => forwardAxiosError(res, err, "Error starting video upload"));
+  }
+);
+
+/**
+ * Get a presigned URL for one part.
+ * @body { bucket, key, uploadId, partNumber }
+ * @returns { url }
+ */
+router.post(
+  "/:user/:project/video/sign",
+  auth.checkToken,
+  requireVideoOwner,
+  requireOwnVideoUpload,
+  (req, res) => {
+    const partNumber = Number(req.body.partNumber);
+    if (
+      !Number.isInteger(partNumber) ||
+      partNumber < 1 ||
+      partNumber > VIDEO_MAX_PARTS
+    ) {
+      return videoReject(
+        res,
+        400,
+        `partNumber must be an integer between 1 and ${VIDEO_MAX_PARTS}.`,
+      );
+    }
+    const { bucket, key, uploadId } = req.body;
+    forwardVideo(res, () =>
+      axios.post(`${videoStorageURL}/video/sign`, {
+        bucket,
+        key,
+        uploadId,
+        partNumber,
+      }),
+    );
+  },
+);
+
+/**
+ * Finish the upload and attach the video to the project.
+ * @body { bucket, key, uploadId, parts: [{ PartNumber, ETag }], name }
+ * @returns 201 { _id, name, size, contentType, status } (+ X-Project-Version)
+ */
+router.post(
+  "/:user/:project/video/complete",
+  auth.checkToken,
+  requireVideoOwner,
+  requireOwnVideoUpload,
+  (req, res) => {
+    const { key, uploadId, parts, name } = req.body;
+    if (
+      !Array.isArray(parts) ||
+      parts.length === 0 ||
+      parts.length > VIDEO_MAX_PARTS
+    ) {
+      return videoReject(res, 400, "parts must be a non-empty array.");
+    }
+    const clean = [];
+    for (const p of parts) {
+      if (!Number.isInteger(p?.PartNumber) || typeof p?.ETag !== "string") {
+        return videoReject(
+          res,
+          400,
+          "Each part needs an integer PartNumber and a string ETag.",
+        );
+      }
+      clean.push({ PartNumber: p.PartNumber, ETag: p.ETag });
+    }
+
+    axios
+      .post(
+        projectsURL + `${req.params.user}/${req.params.project}/video/complete`,
+        { key, uploadId, parts: clean, name },
+        {
+          httpsAgent,
+          headers: {
+            Authorization: req.headers["authorization"],
+            "X-Caller-Id": req.authUserId,
+          },
+        }
+      )
+      .then((resp) => {
+        if (resp.headers?.["x-project-version"]) {
+          res.set("X-Project-Version", resp.headers["x-project-version"]);
+        }
+        return res.status(201).jsonp(resp.data);
+      })
+      .catch((err) => forwardAxiosError(res, err, "Error completing video upload"));
+  }
+);
+
+/**
+ * Cancel the upload and free the parts already stored.
+ * @body { bucket, key, uploadId }
+ */
+router.post(
+  "/:user/:project/video/abort",
+  auth.checkToken,
+  requireVideoOwner,
+  requireOwnVideoUpload,
+  (req, res) => {
+    const { bucket, key, uploadId } = req.body;
+    forwardVideo(res, () =>
+      axios.post(`${videoStorageURL}/video/abort`, { bucket, key, uploadId }),
+    );
+  },
+);
+
+/**
+ * Remove a video from a project.
+ * Needs the X-Project-Version header, like the other edit routes.
+ */
+router.delete(
+  "/:user/:project/video/:video",
+  auth.checkToken,
+  requireVideoOwner,
+  (req, res) => {
+    if (!VIDEO_ID.test(req.params.video)) {
+      return videoReject(res, 400, "Invalid video id.");
+    }
+    axios
+      .delete(
+        projectsURL +
+          `${req.params.user}/${req.params.project}/video/${req.params.video}`,
+        {
+          httpsAgent,
+          headers: {
+            Authorization: req.headers["authorization"],
+            "X-Project-Version": req.headers["x-project-version"],
+            "X-Caller-Id": req.authUserId,
+          },
+        }
+      )
+      .then((resp) => {
+        if (resp.headers?.["x-project-version"]) {
+          res.set("X-Project-Version", resp.headers["x-project-version"]);
+        }
+        return res.sendStatus(204);
+      })
+      .catch((err) => forwardAxiosError(res, err, "Error deleting video"));
+  }
+);
+
+/**
+ * Presigned playback URL (valid for 1 hour, supports Range requests).
+ * The app normally gets this URL from GET /:user/:project (the `videos` array).
+ * @returns { url }
+ */
+router.get(
+  "/:user/:project/video/:stage/:name/url",
+  auth.checkToken,
+  requireVideoOwner,
+  (req, res) => {
+    const { user, project, stage, name } = req.params;
+    if (!VIDEO_FILE_NAME.test(name)) {
+      return videoReject(res, 400, "Invalid file name.");
+    }
+    forwardVideo(res, () =>
+      axios.get(
+        `${videoStorageURL}/image/public/${user}/${project}/${stage}/${name}`,
+      ),
+    );
+  },
+);
+
+// ================== END VIDEO UPLOAD ==================
+
 module.exports = router;

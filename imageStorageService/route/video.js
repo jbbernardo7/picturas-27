@@ -26,8 +26,8 @@ router.post("/sign", wrap(async (req) => {
 
 router.post("/complete", wrap(async (req) => {
   const { bucket, key, uploadId, parts } = req.body;
-  await v.complete(bucket, key, uploadId, parts);
-  return { key };
+  const done = await v.complete(bucket, key, uploadId, parts);
+  return { key, size: done.size };
 }));
 
 router.post("/abort", wrap(async (req) => {

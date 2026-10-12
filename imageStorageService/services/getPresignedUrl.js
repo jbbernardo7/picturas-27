@@ -17,12 +17,17 @@ async function getInternalUrl(userId, projectId, stage, imageName) {
   }
 }
 
-// Same presigned URL with the host rewritten to the nginx /s3 proxy path, so the
-// browser can load it. The signature lives in the path and query, which are unchanged.
-async function getPublicUrl(userId, projectId, stage, imageName) {
-  const url = await getInternalUrl(userId, projectId, stage, imageName);
+// Rewrites a presigned URL's host from the internal S3 endpoint to the nginx /s3
+// proxy path, so the browser can use it. The signature lives in the path and query,
+// which are unchanged. Works for any presigned URL (download or upload part).
+function toPublicUrl(url) {
   const internal = `http://${process.env.S3_ENDPOINT || "seaweedfs:9000"}`;
   return url.replace(internal, process.env.FRONTEND_URL + "/s3");
 }
 
-module.exports = { getInternalUrl, getPublicUrl };
+// Same presigned URL as getInternalUrl, but loadable by the browser.
+async function getPublicUrl(userId, projectId, stage, imageName) {
+  return toPublicUrl(await getInternalUrl(userId, projectId, stage, imageName));
+}
+
+module.exports = { getInternalUrl, getPublicUrl, toPublicUrl };

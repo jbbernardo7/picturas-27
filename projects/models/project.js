@@ -13,11 +13,22 @@ const imgSchema = new mongoose.Schema({
   og_sha256: { type: String, required: true }, 
 });
 
+const videoSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  og_video_key: { type: String, required: true },
+  content_type: { type: String, required: true },
+  size: { type: Number, default: 0 },
+  status: { type: String, enum: ["ready", "processing", "rejected"], default: "ready" },
+  createdAt: { type: Date, default: Date.now },
+});
+
 
 const projectSchema = new mongoose.Schema({
   name: { type: String, required: true },
   user_id: { type: mongoose.Schema.Types.ObjectId, required: true },
+  type: { type: String, enum: ["image", "video"], default: "image" },
   imgs: { type: [imgSchema], default: [] },
+  videos: { type: [videoSchema], default: [] },
   tools: { type: [toolSchema], default: [] },
   version: { type: Number, default: 0 },
   activeToken: { type: Number, default: 0 },
