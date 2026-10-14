@@ -18,19 +18,34 @@ function pathUidFor(uid: string, ownerId?: string, shareId?: string) {
   return shareId ? ownerId! : uid;
 }
 
+// "image" is the default; old projects have no type stored, treat them as "image"
+export type ProjectType = "image" | "video";
+
 export interface Project {
   _id: string;
   user_id: string;
   name: string;
+  type?: ProjectType;
   version: number;
+}
+
+export interface ProjectVideo {
+  _id: string;
+  name: string;
+  size: number;
+  contentType: string;
+  status: string;
+  url: string;
 }
 
 export interface SingleProject {
   _id: string;
   user_id: string;
   name: string;
+  type?: ProjectType;
   tools: ProjectToolResponse[];
   imgs: ProjectImage[];
+  videos?: ProjectVideo[];
   version: number;
 
 }
@@ -179,6 +194,7 @@ export const fetchProjects = async (uid: string, token: string) => {
     _id: p._id,
     user_id: uid,
     name: p.name,
+    type: p.type ?? "image",
     version: p.version, 
   })) as Project[];
 };
@@ -207,7 +223,9 @@ export const fetchProject = async (
     _id: response.data._id,
     user_id: response.data.user_id,
     name: response.data.name,
+    type: response.data.type ?? "image",
     imgs: response.data.imgs,
+    videos: response.data.videos ?? [],
     tools: response.data.tools,
     version: response.data.version,
   } as SingleProject;
@@ -218,15 +236,17 @@ export const addProject = async ({
   token,
   name,
   images = [],
+  type = "image",
 }: {
   uid: string;
   token: string;
   name: string;
   images?: File[];
+  type?: ProjectType;
 }) => {
   const response = await api.post<SingleProject>(
     `/projects/${uid}`,
-    { name },
+    { name, type },
     { headers: { Authorization: `Bearer ${token}` } },
   );
 

@@ -31,6 +31,7 @@ import {
 import { Eraser } from "lucide-react";
 import { useState } from "react";
 import ExpandAITool from "./expand-ai-tool";
+import { isToolAllowedFor, VIDEO_TOOL_NAMES, type ToolNames } from "@/lib/tool-types";
 
 export function Toolbar() {
   const searchParams = useSearchParams();
@@ -55,26 +56,41 @@ export function Toolbar() {
     shareId,
   );
 
+  // Image tools are hidden on video projects (the backend rejects them anyway).
+  // The procedure names are the ones the backend knows.
+  const show = (tool: ToolNames) => isToolAllowedFor(project.type, tool);
+  const isVideo = project.type === "video";
+
   return (
     <div className="flex h-full w-24 flex-col justify-between items-stretch border-r bg-background p-2">
       <div className="flex flex-col gap-2 items-center">
         <span className="text-sm text-gray-500">Tools</span>
-        <BrightnessTool disabled={disabled} />
-        <ContrastTool disabled={disabled} />
-        <SaturationTool disabled={disabled} />
-        <BinarizationTool disabled={disabled} />
-        <RotateTool disabled={disabled} />
-        <CropTool disabled={disabled} />
-        <ResizeTool disabled={disabled} />
-        <BorderTool disabled={disabled} />
-        <WatermarkTool disabled={disabled} />
-        <BgRemovalAITool disabled={disabled} />
-        <CropAITool disabled={disabled} />
-        <ObjectAITool disabled={disabled} />
-        <PeopleAITool disabled={disabled} />
-        <TextAITool disabled={disabled} />
-        <ExpandAITool disabled={disabled} />
-        <UpgradeAITool disabled={disabled} />
+
+        {show("brightness") && <BrightnessTool disabled={disabled} />}
+        {show("contrast") && <ContrastTool disabled={disabled} />}
+        {show("saturation") && <SaturationTool disabled={disabled} />}
+        {show("binarization") && <BinarizationTool disabled={disabled} />}
+        {show("rotate") && <RotateTool disabled={disabled} />}
+        {show("cut") && <CropTool disabled={disabled} />}
+        {show("resize") && <ResizeTool disabled={disabled} />}
+        {show("border") && <BorderTool disabled={disabled} />}
+        {show("watermark") && <WatermarkTool disabled={disabled} />}
+        {show("bg_remove_ai") && <BgRemovalAITool disabled={disabled} />}
+        {show("cut_ai") && <CropAITool disabled={disabled} />}
+        {show("obj_ai") && <ObjectAITool disabled={disabled} />}
+        {show("people_ai") && <PeopleAITool disabled={disabled} />}
+        {show("text_ai") && <TextAITool disabled={disabled} />}
+        {show("expand_ai") && <ExpandAITool disabled={disabled} />}
+        {show("upgrade_ai") && <UpgradeAITool disabled={disabled} />}
+
+        {/* Video tools go here, one line each, e.g.
+            {show("trim") && <TrimTool disabled={disabled} />} */}
+        {isVideo && VIDEO_TOOL_NAMES.length === 0 && (
+          <p className="px-1 text-center text-[11px] text-gray-400">
+            No video tools available yet
+          </p>
+        )}
+
         <AppliedToolsList />
       </div>
       <Dialog open={open} onOpenChange={setOpen}>

@@ -3,6 +3,9 @@
 import { Download, LoaderCircle, OctagonAlert, Play } from "lucide-react";
 import { fetchSharedProject, resolveShareLink } from "@/lib/projects";
 import { ProjectImageList } from "@/components/project-page/project-image-list";
+import { ProjectVideoList } from "@/components/project-page/project-video-list";
+import { AddVideoDialog } from "@/components/project-page/add-video-dialog";
+import { downloadVideo } from "@/components/project-page/project-video";
 import { ViewToggle } from "@/components/project-page/view-toggle";
 import { AddImagesDialog } from "@/components/project-page/add-images-dialog";
 import { Button } from "@/components/ui/button";
@@ -530,6 +533,9 @@ if (project.isError) {
       </div>
     );
 
+// projetos de vídeo não usam a grelha de imagens, nem as ferramentas de imagem
+const isVideo = project.data.type === "video";
+
 const handleCancel = () => {
   // ignorar updates vindos do socket
   ignoreUpdatesRef.current = true;
@@ -699,7 +705,7 @@ const handleCancel = () => {
                     <Play /> Apply
                   </Button>
 
-          {canEdit && (
+          {canEdit && !isVideo && (
             <>
                   <AiAssistantDialog
                     uid={session.user._id}
@@ -716,6 +722,8 @@ const handleCancel = () => {
                   <AddImagesDialog />
           </>
           )}
+
+          {canEdit && isVideo && session.user._id === ownerId && <AddVideoDialog />}
                 {/* botão Share só para o owner */}
                 {session.user._id === ownerId && (
                   <ShareProjectDialog 
@@ -726,6 +734,7 @@ const handleCancel = () => {
                 </>
               )}
 
+              {!isVideo ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -816,6 +825,33 @@ const handleCancel = () => {
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
+              ) : (
+                <Button
+                  variant="outline"
+                  className="px-3"
+                  title={
+                    (project.data.videos?.length ?? 0) > 1
+                      ? "Download videos"
+                      : "Download video"
+                  }
+                  disabled={
+                    mode === "results" || (project.data.videos?.length ?? 0) === 0
+                  }
+                  onClick={() => {
+                    const vids = project.data.videos ?? [];
+                    // staggered, so the browser doesn't block several downloads at once
+                    vids.forEach((v, i) => setTimeout(() => downloadVideo(v), i * 500));
+                    toast({
+                      title:
+                        vids.length > 1
+                          ? `${vids.length} videos downloading.`
+                          : `Video ${vids[0]?.name} downloading.`,
+                    });
+                  }}
+                >
+                  <Download />
+                </Button>
+              )}
 
               <div className="hidden xl:flex items-center gap-2">
                 <ViewToggle />
@@ -828,10 +864,14 @@ const handleCancel = () => {
 
         <div className="h-full overflow-x-hidden flex">
         <Toolbar />
-        <ProjectImageList
-          setCurrentImageId={setCurrentImage}
-          results={projectResults.data}
-        />
+        {isVideo ? (
+          <ProjectVideoList />
+        ) : (
+          <ProjectImageList
+            setCurrentImageId={setCurrentImage}
+            results={projectResults.data}
+          />
+        )}
       </div>
       </div>
       <Transition

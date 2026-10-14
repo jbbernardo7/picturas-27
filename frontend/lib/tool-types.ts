@@ -93,3 +93,22 @@ export type ToolNames =
   | "people_ai"
   | "expand_ai"
   | "project";
+
+// ---------------------------------------------------------------------------
+// Video tools
+// ---------------------------------------------------------------------------
+
+// Tools that only work on video projects. Empty until the first video tool exists.
+// Keep in sync with VIDEO_TOOLS in projects/routes/projects.js: the backend rejects
+// any tool that is not allowed for the project's type.
+export const VIDEO_TOOL_NAMES: ToolNames[] = [];
+
+// Same rule as toolAllowedFor() in the projects service: video projects only get
+// video tools, image projects get everything else.
+export function isToolAllowedFor(
+  projectType: "image" | "video" | undefined,
+  tool: ToolNames,
+): boolean {
+  const isVideoTool = VIDEO_TOOL_NAMES.includes(tool);
+  return projectType === "video" ? isVideoTool : !isVideoTool;
+}
