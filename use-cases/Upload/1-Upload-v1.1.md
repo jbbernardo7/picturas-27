@@ -9,9 +9,9 @@
 | **Campo** | **Valor** |
 |-----------|-----------|
 | **Grupo / Equipa** | Grupo 6 - PL5 |
-| **Autores** | João Bernardo (pg65418); nome (nº); … |
+| **Autores** | João Bernardo (pg65418) |
 | **Data** | 2026-10-14 |
-| **Versão do documento** | v1.2 |
+| **Versão do documento** | v1.1 |
 | **Unidade Curricular** | Requisitos e Arquiteturas de Software — MEI, Universidade do Minho |
 
 ---
@@ -37,7 +37,7 @@ O carregamento de vídeos é a funcionalidade base do suporte a vídeo: todas as
 |------------|--------------|
 | **ID do Caso de Uso** | UC-VID-001 |
 | **Nome** | Carregamento de vídeos |
-| **Versão** | v1.2 |
+| **Versão** | v1.1 |
 | **Autor** | João Bernardo |
 | **Data** | 2026-10-14 |
 | **Objetivo** | Permite ao utilizador carregar um ou mais vídeos para um projeto de vídeo, de modo a poder aplicar operações de edição posteriormente. |
