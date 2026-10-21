@@ -34,7 +34,7 @@ Esta funcionalidade permite transformar conteúdo de um vídeo em imagens que po
 
 | **Secção** | **Detalhes** |
 |------------|--------------|
-| **ID do Caso de Uso** | UC-VID-001 |
+| **ID do Caso de Uso** | UC-VID-003 |
 | **Nome** | Extrair fotogramas de um vídeo |
 | **Versão** | v1.0 |
 | **Autor** | Nuno Silva |
@@ -148,8 +148,8 @@ Esta funcionalidade permite transformar conteúdo de um vídeo em imagens que po
 
 ## 4. Especificação de Requisitos do Sistema (ERS)
 
-**Caso de Uso:** UC-VID-001 — Extração de uma sequência de fotogramas  
-**Versão do dossiê:** v1.1  
+**Caso de Uso:** UC-VID-001 — Extração de uma sequência de fotogramas
+**Versão do dossiê:** v1.1
 **Baseline do Exercício 1:** Especificação do caso de uso de extração de fotogramas, com revisão das regras de negócio, dos limites por perfil e da contabilização das operações.
 
 > O catálogo 4.1 é a fonte única dos requisitos desta ERS. A matriz 4.3 rastreia esses IDs até ao caso de uso ou às decisões de qualidade. A tabela 4.2 descreve o impacto no sistema existente.
