@@ -78,6 +78,7 @@ const advanced_tools = [
   "obj_ai",
   "people_ai",
   "expand_ai",
+  "trim",
 ];
 
 // Conta quantas ferramentas avançadas existem neste projeto (independente de imagens)
@@ -2670,7 +2671,7 @@ async function canUploadVideos(userId) {
 
 // Procedures that only make sense for video projects. Empty until the first
 // video tool exists; add the procedure names here when they do.
-const VIDEO_TOOLS = ["compress"];
+const VIDEO_TOOLS = ["trim" , "compress"];
 
 function toolAllowedFor(type, procedure) {
   return type === "video"

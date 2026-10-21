@@ -24,6 +24,7 @@ export interface CropToolParams {
   bottom: number;
 }
 
+
 export interface ResizeToolParams {
   width: number;
   height: number;
@@ -35,6 +36,11 @@ export interface RotateToolParams {
 
 export interface SaturationToolParams {
   saturationFactor: number; // 0.0 - 2.0 (1.0 normal image)
+}
+
+export interface TrimToolParams {
+  startTime: number;
+  endTime: number;
 }
 
 export interface CompressToolParams {
@@ -78,6 +84,7 @@ export type ToolParams =
   | SaturationToolParams
   | CompressToolParams
   | ExpandAiParams
+  | TrimToolParams
   | object;
 
 export type ToolNames =
@@ -98,6 +105,7 @@ export type ToolNames =
   | "obj_ai"
   | "people_ai"
   | "expand_ai"
+  | "trim"
   | "compress"
   | "project";
 
@@ -108,7 +116,8 @@ export type ToolNames =
 // Tools that only work on video projects.
 // Keep in sync with VIDEO_TOOLS in projects/routes/projects.js: the backend rejects
 // any tool that is not allowed for the project's type.
-export const VIDEO_TOOL_NAMES: ToolNames[] = ["compress"];
+
+export const VIDEO_TOOL_NAMES: ToolNames[] = ["trim","compress"];
 
 // Same rule as toolAllowedFor() in the projects service: video projects only get
 // video tools, image projects get everything else.

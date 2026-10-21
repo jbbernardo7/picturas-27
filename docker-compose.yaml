@@ -353,6 +353,19 @@ services:
     volumes:
       - image_data:/app/images
 
+  trim_tool:
+    build:
+      context: ./Tools
+      dockerfile: trim/Dockerfile
+    restart: on-failure
+    networks:
+      - elk
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - image_data:/app/images
+
   rotate_tool:
     build:
       context: ./Tools
