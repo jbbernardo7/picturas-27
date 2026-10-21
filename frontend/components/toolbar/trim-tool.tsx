@@ -1,22 +1,38 @@
 import { ToolbarButton } from "./toolbar-button";
 import { Scissors } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Label } from "../ui/label";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { getVideoDuration } from "@/lib/utils";
 import {
-  useCurrentImage,
+  useCurrentVideo,
   useProjectInfo,
   useUnsavedChanges,
 } from "@/providers/project-provider";
-import { TrimToolParams } from "@/lib/tool-types";
+import { useSession } from "@/providers/session-provider";
+import type { ProjectToolResponse } from "@/lib/projects";
+import type { TrimToolParams } from "@/lib/tool-types";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+// UC-VID-002 FA1 messages (same text as the projects service).
+function rangeProblem(start: number, end: number, duration: number): string | null {
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return "Start and end times must be numbers.";
+  if (start < 0 || start >= end) return "Start time must be lower than end time."; // RN1
+  if (duration > 0 && end > duration) {
+    return `The interval must be inside the video duration (${duration}s).`; // RN2
+  }
+  return null;
+}
+
+/** UC-VID-002: trims the video open in the player to [start, end] seconds. */
 export default function TrimTool({ disabled }: { disabled: boolean }) {
   const project = useProjectInfo();
-  const currentVideo = useCurrentImage();
+  const video = useCurrentVideo();
+  const videoId = video?._id ?? "";
+  const session = useSession();
+  const isAnonymous = session.user.type === "anonymous";
   const { setHasUnsavedChanges } = useUnsavedChanges();
 
   const [duration, setDuration] = useState<number>(0);
@@ -25,15 +41,34 @@ export default function TrimTool({ disabled }: { disabled: boolean }) {
   const [open, setOpen] = useState<boolean>(false);
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  useEffect(() => {
-    if (!currentVideo) return;
-    getVideoDuration(currentVideo.url)
-      .then((d) => setDuration(Math.floor(d * 100) / 100))
-      .catch(() => setDuration(0));
-  }, [currentVideo]);
+  const matchTool = useCallback(
+    (t: ProjectToolResponse) =>
+      t.procedure === "trim" && (t.params as Partial<TrimToolParams>)?.videoId === videoId,
+    [videoId],
+  );
 
+  // Duration measured on upload; older videos fall back to the browser's metadata.
   useEffect(() => {
-    const trim = project.tools?.find((t) => t.procedure === "trim");
+    if (!video) {
+      setDuration(0);
+      return;
+    }
+    if (video.duration && video.duration > 0) {
+      setDuration(Math.floor(video.duration * 100) / 100);
+      return;
+    }
+    let cancelled = false;
+    getVideoDuration(video.url)
+      .then((d) => !cancelled && setDuration(Math.floor(d * 100) / 100))
+      .catch(() => !cancelled && setDuration(0));
+    return () => {
+      cancelled = true;
+    };
+  }, [video]);
+
+  // Saved interval of this video, or the whole video.
+  useEffect(() => {
+    const trim = project.tools.find(matchTool);
     if (trim) {
       setStartTime((trim.params as TrimToolParams).startTime);
       setEndTime((trim.params as TrimToolParams).endTime);
@@ -41,16 +76,16 @@ export default function TrimTool({ disabled }: { disabled: boolean }) {
       setStartTime(0);
       setEndTime(duration);
     }
-  }, [project.tools, duration]);
+  }, [project.tools, matchTool, duration, open]);
 
-  const invalid =
-    startTime < 0 || startTime >= endTime || (duration > 0 && endTime > duration);
+  const problem = rangeProblem(startTime, endTime, duration);
+  const invalid = problem !== null;
 
   const playInterval = () => {
     const v = videoRef.current;
     if (!v || invalid) return;
     v.currentTime = startTime;
-    v.play();
+    void v.play();
   };
 
   const onTimeUpdate = () => {
@@ -72,22 +107,25 @@ export default function TrimTool({ disabled }: { disabled: boolean }) {
       open={open}
       setOpen={setOpen}
       noPreview
-      tool={{ procedure: "trim", params: { startTime, endTime } }}
+      tool={{ procedure: "trim", params: { videoId, startTime, endTime } }}
+      matchTool={matchTool}
       onDefault={() => {
         setStartTime(0);
         setEndTime(duration);
         setHasUnsavedChanges(false);
       }}
+      // Save stays off while the interval is invalid or still the whole video.
       isDefault={invalid || (startTime === 0 && endTime === duration)}
-      disabled={disabled}
+      disabled={disabled || !video || isAnonymous}
       icon={Scissors}
-      label="Trim video"
+      label={isAnonymous ? "Trim video (registered users only)" : "Trim video"}
     >
       <div className="space-y-2">
-        {currentVideo && (
+        {video && (
           <video
+            key={video._id}
             ref={videoRef}
-            src={currentVideo.url}
+            src={video.url}
             controls
             preload="metadata"
             onTimeUpdate={onTimeUpdate}
@@ -118,10 +156,16 @@ export default function TrimTool({ disabled }: { disabled: boolean }) {
             <span>s</span>
           </div>
         </div>
-        {duration > 0 && <p className="text-xs text-gray-500">Duration: {duration}s</p>}
-        {invalid && (
-          <p className="text-xs text-red-500">
-            Start must be lower than end and inside the video duration.
+        {duration > 0 && (
+          <p className="text-xs text-gray-500">
+            Duration: {duration}s
+            {!invalid && ` · result: ${round2(endTime - startTime)}s`}
+          </p>
+        )}
+        {problem && <p className="text-xs text-red-500">{problem}</p>}
+        {video && (
+          <p className="truncate text-xs text-gray-400" title={video.name}>
+            Applies to {video.name}
           </p>
         )}
       </div>

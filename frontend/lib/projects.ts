@@ -36,6 +36,8 @@ export interface ProjectVideo {
   contentType: string;
   status: string;
   url: string;
+  // seconds, measured on upload (0 when unknown)
+  duration?: number;
 }
 
 export interface SingleProject {

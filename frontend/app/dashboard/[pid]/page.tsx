@@ -42,6 +42,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { ProjectImage } from "@/lib/projects";
 import { Progress } from "@/components/ui/progress";
+import { toolAppliesToVideo } from "@/lib/tool-types";
 import { Card } from "@/components/ui/card";
 import { Transition } from "@headlessui/react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -95,6 +96,8 @@ export default function Project({
   const sidebar = useSidebar();
   const isMobile = useIsMobile();
   const [currentImage, setCurrentImage] = useState<ProjectImage | null>(null);
+  // video projects: the video open in the player (video tools apply only to it)
+  const [currentVideoId, setCurrentVideoId] = useState<string | null>(null);
   const [processing, setProcessing] = useState<boolean>(false);
   const [processingProgress, setProcessingProgress] = useState<number>(0);
   const [processingSteps, setProcessingSteps] = useState<number>(1);
@@ -113,12 +116,17 @@ export default function Project({
   // se um processamento envolve ferramentas de IA ou não
   const processIsAiRef = useRef<boolean>(false);
 
-  // one update per tool and per item (image or video)
+  const isVideoProject = project.data?.type === "video";
+  // one update per tool and per item (image or video). A video only counts the
+  // tools that target it.
   const totalProcessingSteps =
-    (project.data?.tools.length ?? 0) *
-    (project.data?.type === "video"
-      ? (project.data?.videos?.length ?? 0)
-      : (project.data?.imgs.length ?? 0));
+    project.data?.type === "video"
+      ? (project.data?.videos ?? []).reduce(
+          (sum, v) =>
+            sum + project.data!.tools.filter((t) => toolAppliesToVideo(t, v._id)).length,
+          0,
+        )
+      : (project.data?.tools.length ?? 0) * (project.data?.imgs.length ?? 0);
   const projectResults = useGetProjectResults(
     session.user._id,
     pid,
@@ -293,15 +301,18 @@ useEffect(() => {
 
     setProcessingSteps((prev) => {
       const nextSteps = prev + 1;
+      // The counter starts at 1. Videos count every update (one per tool and video),
+      // so the run only ends after the last one; images keep their rule.
+      const doneSteps = isVideoProject ? nextSteps - 1 : nextSteps;
 
       const progress =
         totalProcessingSteps > 0
-          ? Math.min(Math.round((nextSteps * 100) / totalProcessingSteps), 100)
+          ? Math.min(Math.round((doneSteps * 100) / totalProcessingSteps), 100)
           : 100;
 
       setProcessingProgress(progress);
 
-      if (nextSteps >= totalProcessingSteps) {
+      if (doneSteps >= totalProcessingSteps) {
         setTimeout(() => {
           if (ignoreUpdatesRef.current) {
             // cancelar medição
@@ -436,6 +447,7 @@ useEffect(() => {
   session.user._id,
   socket.data,
   totalProcessingSteps,
+  isVideoProject,
   sidebar,
   isMobile,
   projectResults,
@@ -617,6 +629,7 @@ const handleCancel = () => {
     <ProjectProvider
       project={project.data}
       currentImage={currentImage}
+      currentVideoId={currentVideoId}
       preview={{ waiting: waitingForPreview, setWaiting: setWaitingForPreview }}
       ownerId={ownerId}
       shareId={shareId}
@@ -936,7 +949,10 @@ const handleCancel = () => {
         <div className="h-full overflow-x-hidden flex">
         <Toolbar />
         {isVideo ? (
-          <ProjectVideoList results={{ videos: projectResults.data.videos }} />
+          <ProjectVideoList
+            results={{ videos: projectResults.data.videos }}
+            setCurrentVideoId={setCurrentVideoId}
+          />
         ) : (
           <ProjectImageList
             setCurrentImageId={setCurrentImage}

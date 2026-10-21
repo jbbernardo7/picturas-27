@@ -78,8 +78,11 @@ const advanced_tools = [
   "obj_ai",
   "people_ai",
   "expand_ai",
-  "trim",
 ];
+
+// Tools for registered (free) and premium users only, without counting as
+// advanced operations (UC-VID-002: trim is not an advanced/AI tool).
+const REGISTERED_TOOLS = ["trim"];
 
 // Conta quantas ferramentas avançadas existem neste projeto (independente de imagens)
 function count_advanced_tools(project) {
@@ -222,7 +225,8 @@ function process_msg() {
         return;
       }
 
-      const next_pos = process.cur_pos + 1;
+      // video projects skip the tools that target another video
+      const next_pos = nextToolPos(project, img_id, process.cur_pos + 1);
 
 if (/preview/.test(msg_id) && (type == "text" || next_pos >= project.tools.length)) {
   const file_path = path.join(__dirname, `/../${output_file_uri}`);
@@ -876,6 +880,7 @@ router.get("/:user/:project", checkSharePermission, async (req, res, next) => {
             size: v.size,
             contentType: v.content_type,
             status: v.status,
+            duration: v.duration || 0,
             url: resp.data.url,
           });
         } catch (_) {
@@ -1325,7 +1330,10 @@ router.post("/:user/:project/tool", checkSharePermission, requireEditPermission,
 
   let required_types = ["free", "premium"];
 
-  if (!advanced_tools.includes(req.body.procedure))
+  if (
+    !advanced_tools.includes(req.body.procedure) &&
+    !REGISTERED_TOOLS.includes(req.body.procedure)
+  )
     required_types.push("anonymous");
 
   const callerId = getCallerId(req);
@@ -1345,6 +1353,21 @@ router.post("/:user/:project/tool", checkSharePermission, requireEditPermission,
             return res
               .status(400)
               .jsonp(`Tool '${req.body.procedure}' can't be used in a ${project.type || "image"} project`);
+          }
+
+          if (project.type === "video") {
+            const problem = videoToolProblem(project, req.body.procedure, req.body.params);
+            if (problem) return res.status(400).jsonp(problem);
+            const duplicate = project.tools.some(
+              (t) =>
+                t.procedure === req.body.procedure &&
+                String(t.params?.videoId) === String(req.body.params.videoId)
+            );
+            if (duplicate) {
+              return res
+                .status(400)
+                .jsonp(`This video already has a '${req.body.procedure}' tool. Update it instead.`);
+            }
           }
 
           const tool = { position: project.tools.length, ...req.body };
@@ -1478,6 +1501,16 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
         return;
       }
 
+      if (
+        project.type === "video" &&
+        !(project.videos || []).some(
+          (v) => nextToolPos(project, v._id, 0) < project.tools.length
+        )
+      ) {
+        res.status(400).jsonp("No tools apply to the project's videos");
+        return;
+      }
+
       const { adv_ops, totalAdv, charged, newTools } = advanced_tool_num(project);
 
       console.log(
@@ -1529,6 +1562,10 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
         let error = false;
 
         for (let img of items) {
+          // a video with no tool for it is left out of this run
+          const firstPos = nextToolPos(project, img._id, 0);
+          if (firstPos >= project.tools.length) continue;
+
           let url = "";
           try {
             const resp = await get_image_internal_url(
@@ -1557,7 +1594,7 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
 
           const og_img_uri = img.og_uri;
           const new_img_uri = img.new_uri;
-          const tool = project.tools.filter((t) => t.position === 0)[0];
+          const tool = project.tools.filter((t) => t.position === firstPos)[0];
 
           const tool_name = tool.procedure;
           const params = tool.params;
@@ -1568,7 +1605,7 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
             project_id: req.params.project,
             img_id: img._id,
             msg_id: msg_id,
-            cur_pos: 0,
+            cur_pos: firstPos,
             og_img_uri: og_img_uri,
             new_img_uri: new_img_uri,
             cancelToken: project.cancelToken || 0,
@@ -1614,12 +1651,23 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
               `[T-03][PROCESS][SKIP] user=${ownerId} project=${req.params.project} token=${project.committedToken}`
             );
 
-            // Notificar frontend imediatamente (não há work para fazer)
-            send_msg_client(
-              `update-client-process-${uuidv4()}`,
-              new Date().toISOString(),
-              runnerUserId
-            );
+            // Notificar frontend imediatamente (não há work para fazer).
+            // Video projects: the client waits for one update per tool and video.
+            const updates =
+              project.type === "video"
+                ? (project.videos || []).reduce(
+                    (n, v) =>
+                      n + project.tools.filter((t) => toolAppliesTo(project, t, v._id)).length,
+                    0
+                  )
+                : 1;
+            for (let i = 0; i < Math.max(1, updates); i++) {
+              send_msg_client(
+                `update-client-process-${uuidv4()}`,
+                new Date().toISOString(),
+                runnerUserId
+              );
+            }
 
             // Mantém o contrato: “process pedido” -> resposta rápida
             return res.sendStatus(201);
@@ -1789,10 +1837,18 @@ router.put(
           const tool_pos = project.tools.findIndex((i) => i._id == req.params.tool);
           const prev_tool = project.tools[tool_pos];
 
+          let params = req.body.params;
+          if (project.type === "video" && prev_tool) {
+            // a video tool keeps the video it was created for
+            params = { ...params, videoId: prev_tool.params?.videoId ?? params?.videoId };
+            const problem = videoToolProblem(project, prev_tool.procedure, params);
+            if (problem) return res.status(400).jsonp(problem);
+          }
+
           project.tools[tool_pos] = {
             position: prev_tool.position,
             procedure: prev_tool.procedure,
-            params: req.body.params,
+            params: params,
             _id: prev_tool._id,
           };
 
@@ -1824,7 +1880,7 @@ router.put(
               newVersion: updated.version,
               payload: {
                 toolId: req.params.tool,
-                params: req.body.params,
+                params: params,
               },
             },
           });
@@ -2671,12 +2727,54 @@ async function canUploadVideos(userId) {
 
 // Procedures that only make sense for video projects. Empty until the first
 // video tool exists; add the procedure names here when they do.
-const VIDEO_TOOLS = ["trim" , "compress"];
+const VIDEO_TOOLS = ["trim", "compress"];
 
 function toolAllowedFor(type, procedure) {
   return type === "video"
     ? VIDEO_TOOLS.includes(procedure)
     : !VIDEO_TOOLS.includes(procedure);
+}
+
+// In a video project each tool targets one video (params.videoId): the one open
+// in the player. Old tools without a videoId keep applying to every video.
+// Image projects: every tool applies to every image (unchanged).
+function toolAppliesTo(project, tool, itemId) {
+  if (project.type !== "video") return true;
+  const target = tool?.params?.videoId;
+  return !target || String(target) === String(itemId);
+}
+
+// First position >= from whose tool applies to the item; tools.length when none is left.
+function nextToolPos(project, itemId, from) {
+  if (project.type !== "video") return from;
+  const n = project.tools.length;
+  for (let pos = from; pos < n; pos++) {
+    const tool = project.tools.find((t) => t.position === pos);
+    if (tool && toolAppliesTo(project, tool, itemId)) return pos;
+  }
+  return n;
+}
+
+// Error message for invalid video tool params, null when they are fine.
+function videoToolProblem(project, procedure, params) {
+  const videoId = params?.videoId;
+  const video = (project.videos || []).find((v) => String(v._id) === String(videoId));
+  if (!video) return "Open a video of this project before adding a video tool.";
+
+  if (procedure === "trim") {
+    const start = Number(params.startTime);
+    const end = Number(params.endTime);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      return "Start and end times must be numbers (seconds).";
+    }
+    // RN1
+    if (start < 0 || start >= end) return "Start time must be lower than end time.";
+    // RN2 (duration is known for videos uploaded with the ffprobe check)
+    if (video.duration > 0 && end > video.duration + 0.01) {
+      return `The interval must be inside the video duration (${video.duration.toFixed(2)}s).`;
+    }
+  }
+  return null;
 }
 
 function storageError(res, err, fallback) {
@@ -2820,6 +2918,15 @@ router.delete(
 
       const fileKey = video.og_video_key;
       project.videos.pull(video._id);
+
+      // its tools go with it; the others keep their order
+      const kept = [...project.tools]
+        .filter((t) => String(t.params?.videoId) !== String(video._id))
+        .sort((a, b) => a.position - b.position);
+      if (kept.length !== project.tools.length) {
+        kept.forEach((t, i) => (t.position = i));
+        project.tools = kept;
+      }
 
       // Database first: if the version check fails nothing has been lost.
       const updated = await Project.updateIfVersion(

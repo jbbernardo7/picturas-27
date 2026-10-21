@@ -1,8 +1,13 @@
 import { ToolbarButton } from "./toolbar-button";
 import { Button } from "../ui/button";
 import { Minimize2 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { useProjectInfo, useUnsavedChanges } from "@/providers/project-provider";
+import { useCallback, useEffect, useState } from "react";
+import {
+  useCurrentVideo,
+  useProjectInfo,
+  useUnsavedChanges,
+} from "@/providers/project-provider";
+import type { ProjectToolResponse } from "@/lib/projects";
 import type { CompressToolParams } from "@/lib/tool-types";
 
 type Level = CompressToolParams["level"];
@@ -15,20 +20,30 @@ const LEVELS: { value: Level; label: string; hint: string }[] = [
 
 export default function CompressTool({ disabled }: { disabled: boolean }) {
   const project = useProjectInfo();
+  // Compression applies only to the video open in the player.
+  const video = useCurrentVideo();
+  const videoId = video?._id ?? "";
   const { setHasUnsavedChanges } = useUnsavedChanges();
 
   const defaultValue: Level = "medium";
   const [value, setValue] = useState<Level>(defaultValue);
   const [open, setOpen] = useState<boolean>(false);
 
+  const matchTool = useCallback(
+    (t: ProjectToolResponse) =>
+      t.procedure === "compress" &&
+      (t.params as Partial<CompressToolParams>)?.videoId === videoId,
+    [videoId],
+  );
+
   useEffect(() => {
-    const compressTool = project.tools.find((t) => t.procedure === "compress");
+    const compressTool = project.tools.find(matchTool);
     if (compressTool) {
       setValue((compressTool.params as CompressToolParams).level ?? defaultValue);
     } else {
       setValue(defaultValue);
     }
-  }, [project.tools, open]);
+  }, [project.tools, open, matchTool]);
 
   return (
     <ToolbarButton
@@ -37,9 +52,11 @@ export default function CompressTool({ disabled }: { disabled: boolean }) {
       tool={{
         procedure: "compress",
         params: {
+          videoId,
           level: value,
         },
       }}
+      matchTool={matchTool}
       onDefault={() => {
         setValue(defaultValue);
         setHasUnsavedChanges(false);
@@ -48,7 +65,7 @@ export default function CompressTool({ disabled }: { disabled: boolean }) {
       isDefault={false}
       // There is no quick preview for a video.
       noPreview
-      disabled={disabled}
+      disabled={disabled || !video}
       icon={Minimize2}
       label="Compress"
     >
@@ -71,6 +88,11 @@ export default function CompressTool({ disabled }: { disabled: boolean }) {
       <p className="pt-2 text-xs text-gray-500">
         {LEVELS.find((l) => l.value === value)?.hint}
       </p>
+      {video && (
+        <p className="truncate pt-1 text-xs text-gray-400" title={video.name}>
+          Applies to {video.name}
+        </p>
+      )}
     </ToolbarButton>
   );
 }

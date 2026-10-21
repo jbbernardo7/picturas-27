@@ -24,7 +24,6 @@ export interface CropToolParams {
   bottom: number;
 }
 
-
 export interface ResizeToolParams {
   width: number;
   height: number;
@@ -39,11 +38,13 @@ export interface SaturationToolParams {
 }
 
 export interface TrimToolParams {
-  startTime: number;
-  endTime: number;
+  videoId: string; // the video it applies to
+  startTime: number; // seconds
+  endTime: number; // seconds
 }
 
 export interface CompressToolParams {
+  videoId: string; // the video it applies to
   // light = best quality / bigger file, strong = smallest file / lower quality
   level: "light" | "medium" | "strong";
 }
@@ -116,8 +117,15 @@ export type ToolNames =
 // Tools that only work on video projects.
 // Keep in sync with VIDEO_TOOLS in projects/routes/projects.js: the backend rejects
 // any tool that is not allowed for the project's type.
+export const VIDEO_TOOL_NAMES: ToolNames[] = ["trim", "compress"];
 
-export const VIDEO_TOOL_NAMES: ToolNames[] = ["trim","compress"];
+// In a video project each tool targets the video that was open in the player
+// (params.videoId). Same rule as toolAppliesTo() in the projects service: old
+// tools without a videoId apply to every video.
+export function toolAppliesToVideo(tool: { params?: unknown }, videoId: string): boolean {
+  const target = (tool.params as { videoId?: string } | undefined)?.videoId;
+  return !target || target === videoId;
+}
 
 // Same rule as toolAllowedFor() in the projects service: video projects only get
 // video tools, image projects get everything else.

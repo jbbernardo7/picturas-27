@@ -43,6 +43,9 @@ interface ToolbarButtonProps {
   noParams?: boolean;
   // tools that have no quick preview (video tools): hides the Preview button
   noPreview?: boolean;
+  // which saved tool this button edits; by default the one with the same procedure.
+  // Video tools pass one that also matches the open video.
+  matchTool?: (t: ProjectToolResponse) => boolean;
   onDefault?: () => void;
 }
 
@@ -59,6 +62,7 @@ export function ToolbarButton({
   children,
   noParams = false,
   noPreview = false,
+  matchTool,
   onDefault = () => {},
 }: ToolbarButtonProps) {
   const router = useRouter();
@@ -100,10 +104,12 @@ export function ToolbarButton({
     return false;
   };
 
-  const variant =
-    project.tools.find((t) => t.procedure === tool.procedure) !== undefined
-      ? "default"
-      : "outline";
+  const isThisTool = useMemo(
+    () => matchTool ?? ((t: ProjectToolResponse) => t.procedure === tool.procedure),
+    [matchTool, tool.procedure],
+  );
+
+  const variant = project.tools.find(isThisTool) !== undefined ? "default" : "outline";
 
   const currentImage = useCurrentImage();
 
@@ -272,8 +278,8 @@ export function ToolbarButton({
   }, [socket.data, preview]);
 
   useEffect(() => {
-    setPrevTool(project.tools.find((t) => t.procedure === tool.procedure));
-  }, [project.tools, tool.procedure]);
+    setPrevTool(project.tools.find(isThisTool));
+  }, [project.tools, isThisTool]);
 
   const locked = !canEdit;
 

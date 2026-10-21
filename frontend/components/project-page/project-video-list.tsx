@@ -15,7 +15,14 @@ import { useSession } from "@/providers/session-provider";
 import type { ResultVideo } from "@/lib/projects";
 import { ProjectVideo } from "./project-video";
 
-export function ProjectVideoList({ results }: { results: { videos: ResultVideo[] } }) {
+export function ProjectVideoList({
+  results,
+  setCurrentVideoId,
+}: {
+  results: { videos: ResultVideo[] };
+  // receives the video open in the player (edit mode only), null otherwise
+  setCurrentVideoId?: (id: string | null) => void;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const view = searchParams.get("view") ?? "grid";
@@ -43,6 +50,13 @@ export function ProjectVideoList({ results }: { results: { videos: ResultVideo[]
       setJumpTo(null);
     }
   }, [view]);
+
+  // The video tools act on the video open in the player.
+  const openVideoId =
+    view === "carousel" && !isResults && current > 0 ? (videos[current - 1]?._id ?? null) : null;
+  useEffect(() => {
+    setCurrentVideoId?.(openVideoId);
+  }, [openVideoId, setCurrentVideoId]);
 
   useEffect(() => {
     if (!api) return;

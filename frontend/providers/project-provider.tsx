@@ -2,6 +2,7 @@
 
 import {
   ProjectImage,
+  ProjectVideo,
   SingleProject,
   ProjectToolResponse,
 } from "@/lib/projects";
@@ -22,6 +23,8 @@ interface ProjectContextData {
   project: SingleProject;
   setProjectTools: (tools: ProjectToolResponse[]) => void;
   currentImage: ProjectImage | null;
+  // video projects: the video open in the player (video tools only apply to it)
+  currentVideoId: string | null;
   preview: {
     waiting: string;
     setWaiting: (waiting: string) => void;
@@ -37,6 +40,7 @@ export function ProjectProvider({
   children,
   project,
   currentImage,
+  currentVideoId = null,
   preview,
   ownerId,
   shareId,
@@ -45,6 +49,7 @@ export function ProjectProvider({
   children: React.ReactNode;
   project: SingleProject;
   currentImage: ProjectImage | null;
+  currentVideoId?: string | null;
   preview: {
     waiting: string;
     setWaiting: (waiting: string) => void;
@@ -283,6 +288,7 @@ export function ProjectProvider({
         project: { ...project, tools, version },
         setProjectTools: setTools,
         currentImage,
+        currentVideoId,
         preview,
         hasUnsavedChanges,
         canEdit,
@@ -319,6 +325,17 @@ export function useCurrentImage() {
     throw new Error("useCurrentImage() must be used within a ProjectProvider");
   }
   return context.currentImage;
+}
+
+/** The video open in the player of a video project, or null (grid, results, image project). */
+export function useCurrentVideo(): ProjectVideo | null {
+  const context = useContext(ProjectContext);
+  if (context === undefined) {
+    throw new Error("useCurrentVideo() must be used within a ProjectProvider");
+  }
+  const { currentVideoId, project } = context;
+  if (!currentVideoId) return null;
+  return (project.videos ?? []).find((v) => v._id === currentVideoId) ?? null;
 }
 
 export function usePreview() {

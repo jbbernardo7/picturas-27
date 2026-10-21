@@ -20,7 +20,7 @@ const queues = {
     'compress': 'compress_queue',
     'watermark': 'watermark_queue',
     'project': 'project_queue',
-    'ws': 'ws_queue'
+    'ws': 'ws_queue',
     'trim': 'trim_queue',
 }
 

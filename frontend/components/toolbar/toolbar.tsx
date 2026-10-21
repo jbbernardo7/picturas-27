@@ -32,6 +32,7 @@ import { Eraser } from "lucide-react";
 import { useState } from "react";
 import ExpandAITool from "./expand-ai-tool";
 import CompressTool from "./compress-tool";
+import TrimTool from "./trim-tool";
 import { isToolAllowedFor, VIDEO_TOOL_NAMES, type ToolNames } from "@/lib/tool-types";
 
 export function Toolbar() {
@@ -85,7 +86,8 @@ export function Toolbar() {
         {show("expand_ai") && <ExpandAITool disabled={disabled} />}
         {show("upgrade_ai") && <UpgradeAITool disabled={disabled} />}
 
-        {/* Video tools: one line each */}
+        {/* Video tools: one line each. They act on the video open in the player. */}
+        {show("trim") && <TrimTool disabled={disabled} />}
         {show("compress") && <CompressTool disabled={disabled} />}
         {isVideo && VIDEO_TOOL_NAMES.length === 0 && (
           <p className="px-1 text-center text-[11px] text-gray-400">
