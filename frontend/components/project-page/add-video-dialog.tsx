@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { FileVideo, LoaderCircle, Plus, Upload, X } from "lucide-react";
@@ -14,35 +14,25 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import { useProjectInfo } from "@/providers/project-provider";
 import { useSession } from "@/providers/session-provider";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import {
-  describeUploadError,
-  UploadCancelled,
-  uploadVideo,
-  validateVideoFile,
-  type UploadProgress,
-} from "@/lib/video-upload";
+import { UPLOAD_MESSAGES } from "@/lib/video-upload";
+import { sortVideoDrop } from "@/lib/video-drop";
+import { useVideoUploadQueue } from "@/lib/use-video-upload-queue";
+import { formatSize, VideoUploadList } from "../video-upload-list";
 
-function formatSize(bytes: number) {
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
+type Phase = "edit" | "uploading" | "finished";
 
 export function AddVideoDialog() {
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState<File[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<string[]>([]);
   const [dragOver, setDragOver] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [progress, setProgress] = useState<UploadProgress | null>(null);
+  const [reading, setReading] = useState(false);
+  const [phase, setPhase] = useState<Phase>("edit");
   const inputRef = useRef<HTMLInputElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const stopRef = useRef(false);
 
   const { toast } = useToast();
   const { _id: pid } = useProjectInfo();
@@ -52,87 +42,71 @@ export function AddVideoDialog() {
   const shareId = searchParams.get("share") ?? undefined;
   const qc = useQueryClient();
   const projectKey = ["project", session.user._id, pid, session.token, ownerId, shareId];
+  const queue = useVideoUploadQueue();
+  const isAnonymous = session.user.type === "anonymous";
 
-  function addFiles(list: FileList | File[] | null) {
-    if (!list) return;
-    const accepted: File[] = [];
-    const problems: string[] = [];
-    for (const file of Array.from(list)) {
-      const problem = validateVideoFile(file);
-      if (problem) problems.push(`${file.name}: ${problem}`);
-      else accepted.push(file);
+  async function addFiles(list: File[]) {
+    if (list.length === 0) return;
+    setReading(true);
+    try {
+      const { videos, images, errors } = await sortVideoDrop(list);
+      // E7 in an existing project: images are rejected, the rest go on.
+      const all = [
+        ...errors,
+        ...images.map((f) => `${f.name}: ${UPLOAD_MESSAGES.projectType} (this is a video project).`),
+      ];
+      setErrors(all);
+      if (videos.length > 0) setFiles((prev) => [...prev, ...videos]);
+    } finally {
+      setReading(false);
     }
-    setError(problems.length > 0 ? problems.join(" ") : null);
-    if (accepted.length > 0) setFiles((prev) => [...prev, ...accepted]);
   }
 
   async function handleAdd() {
-    stopRef.current = false;
-    setUploading(true);
-    let done = 0;
-
-    for (let i = 0; i < files.length; i++) {
-      if (stopRef.current) break;
-      setCurrentIndex(i);
-      setProgress(null);
-
-      const controller = new AbortController();
-      abortRef.current = controller;
-      try {
-        const result = await uploadVideo({
-          uid: session.user._id,
-          pid,
-          token: session.token,
-          file: files[i],
-          signal: controller.signal,
-          onProgress: setProgress,
-        });
-
-        const v = Number(result.version);
-        if (Number.isFinite(v)) {
-          qc.setQueryData(projectKey, (old: any) => (old ? { ...old, version: v } : old));
+    setPhase("uploading");
+    const summary = await queue.run({
+      files,
+      uid: session.user._id,
+      pid,
+      token: session.token,
+      onUploaded: (_video, version) => {
+        if (version !== undefined) {
+          qc.setQueryData(projectKey, (old: any) =>
+            old ? { ...old, version: Math.max(old.version ?? 0, version) } : old,
+          );
         }
         qc.invalidateQueries({ queryKey: projectKey, refetchType: "all" });
-        done++;
-      } catch (err) {
-        if (err instanceof UploadCancelled) {
-          toast({ title: "Upload cancelado" });
-        } else {
-          const { title, description } = describeUploadError(err);
-          toast({ title: `${title} (${files[i].name})`, description, variant: "destructive" });
-        }
-        break; // stop at the first problem
-      }
-    }
+      },
+    });
 
-    abortRef.current = null;
-    setUploading(false);
-    setProgress(null);
-
-    if (done > 0) {
+    if (summary.done > 0) {
       toast({
-        title: done === 1 ? "Video added successfully." : `${done} videos added successfully.`,
+        title:
+          summary.done === 1 ? "Video added successfully." : `${summary.done} videos added successfully.`,
       });
-      setFiles([]);
-      setOpen(false);
     }
+    if (summary.failed === 0) {
+      setOpen(false);
+      return;
+    }
+    setPhase("finished"); // keep the list on screen so the failures can be read
   }
 
-  const percent =
-    progress && progress.total > 0
-      ? Math.min(100, Math.round((progress.loaded * 100) / progress.total))
-      : 0;
+  useEffect(() => {
+    if (open) return;
+    setFiles([]);
+    setErrors([]);
+    setPhase("edit");
+    queue.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (uploading && !next) return; // use Cancel instead
+        if (phase === "uploading" && !next) return; // cancel the uploads instead
         setOpen(next);
-        if (!next) {
-          setFiles([]);
-          setError(null);
-        }
       }}
     >
       <DialogTrigger asChild>
@@ -140,56 +114,75 @@ export function AddVideoDialog() {
           <Plus /> Add Video
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[480px]">
         <DialogHeader>
           <DialogTitle>Add Video</DialogTitle>
-          <DialogDescription>Add a video to your project.</DialogDescription>
+          <DialogDescription>Add one or more videos to your project.</DialogDescription>
         </DialogHeader>
 
-        <div
-          role="button"
-          tabIndex={0}
-          onClick={() => !uploading && inputRef.current?.click()}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
-          }}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOver(true);
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragOver(false);
-            if (!uploading) addFiles(e.dataTransfer.files);
-          }}
-          className={cn(
-            "flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed p-8 text-center cursor-pointer transition-colors",
-            dragOver ? "border-primary bg-accent" : "border-muted-foreground/30",
-            uploading && "cursor-default opacity-70",
-          )}
-        >
-          <Upload className="size-8 text-muted-foreground" />
-          <p className="text-sm font-medium">Drag and drop videos, or click to choose</p>
-          <p className="text-xs text-muted-foreground">MP4, WebM or MOV</p>
-        </div>
+        {isAnonymous ? (
+          <p className="text-sm text-destructive">{UPLOAD_MESSAGES.profile}</p>
+        ) : (
+          phase === "edit" && (
+            <div
+              role="button"
+              tabIndex={0}
+              onClick={() => !reading && inputRef.current?.click()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                if (!reading) void addFiles(Array.from(e.dataTransfer.files));
+              }}
+              className={cn(
+                "flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed p-8 text-center cursor-pointer transition-colors",
+                dragOver ? "border-primary bg-accent" : "border-muted-foreground/30",
+              )}
+            >
+              {reading ? (
+                <LoaderCircle className="size-8 animate-spin text-muted-foreground" />
+              ) : (
+                <Upload className="size-8 text-muted-foreground" />
+              )}
+              <p className="text-sm font-medium">
+                {reading ? "Reading the zip..." : "Drag and drop videos or a .zip, or click to choose"}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                MP4, WEBM or MOV · up to 500 MB and 10 minutes each
+              </p>
+            </div>
+          )
+        )}
 
         <input
           ref={inputRef}
           type="file"
           multiple
           className="hidden"
-          accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
+          accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,.zip,application/zip"
           onChange={(e) => {
-            addFiles(e.target.files);
+            void addFiles(Array.from(e.target.files ?? []));
             e.target.value = "";
           }}
         />
 
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        {errors.length > 0 && phase === "edit" && (
+          <ul className="text-sm text-destructive">
+            {errors.map((err, i) => (
+              <li key={i}>{err}</li>
+            ))}
+          </ul>
+        )}
 
-        {files.length > 0 && (
-          <div className="flex max-h-40 flex-col gap-2 overflow-y-auto">
+        {phase === "edit" && files.length > 0 && (
+          <div className="flex max-h-48 flex-col gap-2 overflow-y-auto">
             {files.map((file, i) => (
               <div key={file.name + i} className="flex items-center gap-3 rounded-md border p-2">
                 <FileVideo className="size-6 shrink-0 text-muted-foreground" />
@@ -197,56 +190,40 @@ export function AddVideoDialog() {
                   <p className="truncate text-sm font-medium">{file.name}</p>
                   <p className="text-xs text-muted-foreground">{formatSize(file.size)}</p>
                 </div>
-                {!uploading && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
-                    title="Remove"
-                  >
-                    <X className="size-4" />
-                  </Button>
-                )}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+                  title="Remove"
+                >
+                  <X className="size-4" />
+                </Button>
               </div>
             ))}
           </div>
         )}
 
-        {uploading && (
-          <div className="flex flex-col gap-1">
-            <Progress value={progress?.phase === "finishing" ? 100 : percent} />
-            <p className="text-xs text-muted-foreground">
-              {files.length > 1 ? `Video ${currentIndex + 1} of ${files.length}: ` : ""}
-              {!progress
-                ? "Starting..."
-                : progress.phase === "finishing"
-                  ? "Finishing..."
-                  : `${percent}% (${formatSize(progress.loaded)} of ${formatSize(progress.total)})`}
-            </p>
-          </div>
-        )}
+        {phase !== "edit" && <VideoUploadList items={queue.items} onCancel={queue.cancel} />}
 
         <DialogFooter>
-          {uploading && (
-            <Button
-              variant="outline"
-              onClick={() => {
-                stopRef.current = true;
-                abortRef.current?.abort();
-              }}
-            >
-              Cancel
+          {phase === "uploading" && (
+            <Button variant="outline" onClick={queue.cancelAll}>
+              Cancel all
             </Button>
           )}
-          <Button
-            onClick={handleAdd}
-            disabled={files.length === 0 || uploading}
-            className="inline-flex items-center gap-1"
-          >
-            <span>Add</span>
-            {uploading && <LoaderCircle className="size-[1em] animate-spin" />}
-          </Button>
+          {phase === "finished" ? (
+            <Button onClick={() => setOpen(false)}>Close</Button>
+          ) : (
+            <Button
+              onClick={handleAdd}
+              disabled={files.length === 0 || phase !== "edit" || reading || isAnonymous}
+              className="inline-flex items-center gap-1"
+            >
+              <span>Add</span>
+              {phase === "uploading" && <LoaderCircle className="size-[1em] animate-spin" />}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

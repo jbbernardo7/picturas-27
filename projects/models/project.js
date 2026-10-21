@@ -18,6 +18,9 @@ const videoSchema = new mongoose.Schema({
   og_video_key: { type: String, required: true },
   content_type: { type: String, required: true },
   size: { type: Number, default: 0 },
+  og_sha256: { type: String, default: "" }, // hash of the stored file (REQ-VID-UPLOAD-020)
+  duration: { type: Number, default: 0 }, // seconds
+  codec: { type: String, default: "" },
   status: { type: String, enum: ["ready", "processing", "rejected"], default: "ready" },
   createdAt: { type: Date, default: Date.now },
 });
@@ -27,6 +30,8 @@ const projectSchema = new mongoose.Schema({
   name: { type: String, required: true },
   user_id: { type: mongoose.Schema.Types.ObjectId, required: true },
   type: { type: String, enum: ["image", "video"], default: "image" },
+  // A new video project stays hidden until its first video is stored (RN6).
+  pending: { type: Boolean, default: false },
   imgs: { type: [imgSchema], default: [] },
   videos: { type: [videoSchema], default: [] },
   tools: { type: [toolSchema], default: [] },

@@ -89,18 +89,28 @@ module.exports.updateRaw = async (user_id, project_id, update) => {
   ).exec();
 };
 
-// Adiciona um vídeo (atómico) apenas a um projeto do tipo "video" que ainda tenha espaço.
+// Adiciona um vídeo (atómico) a um projeto do tipo "video" e torna-o visível (pending=false).
 // Sem pré-condição de versão: um upload pode demorar minutos e não deve ser rejeitado
 // só porque a versão mudou entretanto. A versão é incrementada na mesma.
-module.exports.addVideo = async (user_id, project_id, video, maxVideos) => {
+module.exports.addVideo = async (user_id, project_id, video) => {
   return await Project.findOneAndUpdate(
-    {
-      user_id: user_id,
-      _id: project_id,
-      type: "video",
-      $expr: { $lt: [{ $size: { $ifNull: ["$videos", []] } }, maxVideos] },
-    },
-    { $push: { videos: video }, $inc: { version: 1 } },
+    { user_id: user_id, _id: project_id, type: "video" },
+    { $push: { videos: video }, $set: { pending: false }, $inc: { version: 1 } },
     { new: true }
   ).exec();
+};
+
+// Apaga projetos de vídeo que ficaram pendentes (nenhum vídeo carregado) há mais de maxAgeMs.
+module.exports.deleteStalePending = async (user_id, maxAgeMs) => {
+  const projects = await Project.find({
+    user_id: user_id,
+    pending: true,
+    "videos.0": { $exists: false },
+  }).exec();
+  const cutoff = Date.now() - maxAgeMs;
+  const stale = projects.filter((p) => p._id.getTimestamp().getTime() < cutoff);
+  if (stale.length > 0) {
+    await Project.deleteMany({ _id: { $in: stale.map((p) => p._id) }, pending: true }).exec();
+  }
+  return stale.length;
 };

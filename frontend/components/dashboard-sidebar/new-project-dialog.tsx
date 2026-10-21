@@ -7,7 +7,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import { Label } from "../ui/label";
 import { Input } from "../ui/input";
 import { useEffect, useRef, useState } from "react";
@@ -15,53 +14,20 @@ import { useToast } from "@/hooks/use-toast";
 import { useAddProject } from "@/lib/mutations/projects";
 import ImageSubmissionArea from "../image-submission-area";
 import { useSession } from "@/providers/session-provider";
-import { FileVideo, ImageIcon, LoaderCircle, Upload, Video, X } from "lucide-react";
+import { AlertTriangle, FileVideo, ImageIcon, LoaderCircle, Upload, Video, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
-import JSZip from "jszip";
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/error-messages";
 import { deleteProject, type ProjectType } from "@/lib/projects";
-import {
-  describeUploadError,
-  UploadCancelled,
-  uploadVideo,
-  validateVideoFile,
-  type UploadProgress,
-} from "@/lib/video-upload";
+import { isImageFile, UPLOAD_MESSAGES } from "@/lib/video-upload";
+import { sortVideoDrop } from "@/lib/video-drop";
+import { useVideoUploadQueue } from "@/lib/use-video-upload-queue";
+import { formatSize, VideoUploadList } from "../video-upload-list";
 
-const VIDEO_EXT_TO_MIME: Record<string, string> = {
-  mp4: "video/mp4",
-  webm: "video/webm",
-  mov: "video/quicktime",
-};
+type Phase = "edit" | "uploading" | "finished";
 
-function formatSize(bytes: number) {
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-// Finds the video inside a zip. A project holds exactly one video, so the zip must contain one.
-async function extractVideoFromZip(zipFile: File): Promise<{ file?: File; error?: string }> {
-  const zip = await JSZip.loadAsync(zipFile);
-  const entries = Object.values(zip.files).filter((entry) => {
-    if (entry.dir || entry.name.startsWith("__MACOSX/")) return false;
-    const base = entry.name.split("/").pop() ?? "";
-    if (base.startsWith(".")) return false;
-    return Boolean(VIDEO_EXT_TO_MIME[base.split(".").pop()?.toLowerCase() ?? ""]);
-  });
-
-  if (entries.length === 0) return { error: "No MP4, WebM or MOV video found in the zip." };
-  if (entries.length > 1) {
-    return { error: `The zip has ${entries.length} videos, but a project holds only one.` };
-  }
-
-  const entry = entries[0];
-  const base = entry.name.split("/").pop() as string;
-  const mime = VIDEO_EXT_TO_MIME[base.split(".").pop()!.toLowerCase()];
-  const blob = await entry.async("blob");
-  return { file: new File([blob], base, { type: mime }) };
-}
+const TYPE_LABEL: Record<ProjectType, string> = { image: "Images", video: "Video" };
 
 export default function NewProjectDialog({
   files = [],
@@ -78,71 +44,58 @@ export default function NewProjectDialog({
 
   const [open, setOpen] = useState<boolean>(false);
   const [name, setName] = useState<string>("");
-  const [type, setType] = useState<ProjectType>("image");
+  const [type, setType] = useState<ProjectType>("image"); // RN8: Image by default
   const [imageFiles, setImageFiles] = useState<File[]>([]);
+  const [receivedImages, setReceivedImages] = useState<File[]>([]);
+  const [imageAreaKey, setImageAreaKey] = useState(0);
 
   // video project state
-  const [videoFile, setVideoFile] = useState<File | null>(null);
-  const [videoError, setVideoError] = useState<string | null>(null);
+  const [videoFiles, setVideoFiles] = useState<File[]>([]);
+  const [videoErrors, setVideoErrors] = useState<string[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [reading, setReading] = useState(false); // extracting a zip
-  const [busy, setBusy] = useState(false); // creating + uploading
-  const [progress, setProgress] = useState<UploadProgress | null>(null);
+  const [phase, setPhase] = useState<Phase>("edit");
+  const [mismatch, setMismatch] = useState<File[] | null>(null); // E7 warning
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const [noneUploaded, setNoneUploaded] = useState(false); // E6
   const inputRef = useRef<HTMLInputElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
 
   const session = useSession();
   const addProject = useAddProject(session.user._id, session.token);
+  const queue = useVideoUploadQueue();
+  const isAnonymous = session.user.type === "anonymous";
+  const busy = phase === "uploading";
 
   const canCreate =
     name !== "" &&
-    !busy &&
+    phase === "edit" &&
     !reading &&
-    (type === "video" ? videoFile !== null : imageFiles.length > 0);
+    !addProject.isPending &&
+    !(type === "video" && isAnonymous) &&
+    imageFiles.length + videoFiles.length > 0;
 
-  async function handleVideoFiles(list: FileList | File[] | null) {
-    if (!list || list.length === 0) return;
-    setVideoError(null);
-
-    if (list.length > 1) {
-      setVideoError("Drop a single video. A project holds only one.");
-      return;
-    }
-
-    const dropped = list[0];
-    const isZip =
-      dropped.type === "application/zip" ||
-      dropped.type === "application/x-zip-compressed" ||
-      dropped.name.toLowerCase().endsWith(".zip");
-
-    if (isZip) {
-      setReading(true);
-      try {
-        const { file, error } = await extractVideoFromZip(dropped);
-        if (error || !file) {
-          setVideoError(error ?? "Could not read the zip.");
-          return;
-        }
-        const problem = validateVideoFile(file);
-        if (problem) {
-          setVideoError(problem);
-          return;
-        }
-        setVideoFile(file);
-      } catch {
-        setVideoError("Could not read the zip.");
-      } finally {
-        setReading(false);
+  /** Adds dropped files to the video list. Images are kept as images (E7 is checked on Create). */
+  async function addVideoDrop(list: File[]) {
+    if (list.length === 0) return;
+    setReading(true);
+    try {
+      const { videos, images, errors } = await sortVideoDrop(list);
+      setVideoErrors(errors);
+      if (videos.length > 0) setVideoFiles((prev) => [...prev, ...videos]);
+      if (images.length > 0) {
+        const merged = [...imageFiles, ...images];
+        setReceivedImages(merged);
+        setImageFiles(merged);
       }
-      return;
+    } finally {
+      setReading(false);
     }
+  }
 
-    const problem = validateVideoFile(dropped);
-    if (problem) {
-      setVideoError(problem);
-      return;
-    }
-    setVideoFile(dropped);
+  function resetImages() {
+    setImageFiles([]);
+    setReceivedImages([]);
+    setImageAreaKey((k) => k + 1); // remount to clear its own list
   }
 
   function handleCreateImages() {
@@ -176,84 +129,97 @@ export default function NewProjectDialog({
   }
 
   async function handleCreateVideo() {
-    if (!videoFile) return;
     const uid = session.user._id;
     const token = session.token;
-    setBusy(true);
+    setPhase("uploading");
+    setNoneUploaded(false);
 
-    // 1) create the (empty) video project
+    // 1) create the project; it stays hidden until a video is stored (RN6)
     let project;
     try {
       project = await addProject.mutateAsync({ uid, token, name, type: "video", images: [] });
     } catch (error) {
       const { title, description } = getErrorMessage("project-create", error);
       toast({ title, description, variant: "destructive" });
-      setBusy(false);
+      setPhase("edit");
       return;
     }
 
-    // 2) upload the video to it
-    const controller = new AbortController();
-    abortRef.current = controller;
-    try {
-      await uploadVideo({
-        uid,
-        pid: project._id,
-        token,
-        file: videoFile,
-        signal: controller.signal,
-        onProgress: setProgress,
-      });
-      toast({
-        title: "Projeto criado com sucesso",
-        description: "O vídeo foi adicionado ao novo projeto.",
-      });
-      setBusy(false);
-      setProgress(null);
-      setOpen(false);
-      router.push(`/dashboard/${project._id}`);
-    } catch (error) {
-      // Roll back: don't leave an empty video project behind. Best effort.
+    // 2) upload every video at the same time (RN10)
+    const summary = await queue.run({ files: videoFiles, uid, pid: project._id, token });
+    qc.invalidateQueries({ queryKey: ["projects", uid, token], refetchType: "all" });
+
+    // 3) nothing stored: don't keep the project (E6)
+    if (summary.done === 0) {
       try {
         await deleteProject({ uid, pid: project._id, token, projectVersion: project.version });
-      } catch {}
-      qc.invalidateQueries({ queryKey: ["projects", uid, token], refetchType: "all" });
-
-      if (error instanceof UploadCancelled) {
-        toast({ title: "Upload cancelado", description: "O projeto não foi criado." });
-      } else {
-        const { title, description } = describeUploadError(error);
-        toast({ title, description, variant: "destructive" });
+      } catch {
+        // still hidden (pending), and removed later by the server
       }
-      setBusy(false);
-      setProgress(null);
-    } finally {
-      abortRef.current = null;
+      setNoneUploaded(true);
+      setPhase("finished");
+      return;
     }
+
+    // 4) open the project; if some files failed, show their status first
+    if (summary.failed === 0) {
+      toast({
+        title: "Projeto criado com sucesso",
+        description:
+          summary.done === 1
+            ? "O vídeo foi adicionado ao novo projeto."
+            : `${summary.done} vídeos foram adicionados ao novo projeto.`,
+      });
+      setOpen(false);
+      router.push(`/dashboard/${project._id}`);
+      return;
+    }
+    setCreatedId(project._id);
+    setPhase("finished");
   }
 
   function handleCreate() {
+    // E7: warn before creating when the files don't all match the chosen type
+    const mismatched = type === "video" ? imageFiles : videoFiles;
+    if (mismatched.length > 0) {
+      setMismatch(mismatched);
+      return;
+    }
     if (type === "video") void handleCreateVideo();
     else handleCreateImages();
   }
 
+  // Files dropped on the library (FA1): sort them, then open the dialog.
   useEffect(() => {
-    if (files.length > 0) {
-      setOpen(true);
-    }
+    if (files.length === 0) return;
+    const images = files.filter(isImageFile);
+    const others = files.filter((f) => !isImageFile(f));
+    setReceivedImages(images);
+    setImageFiles(images);
+    if (others.length > 0) void addVideoDrop(others);
+    setOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [files]);
 
+  // Reset everything when the dialog closes.
   useEffect(() => {
+    if (open) return;
     setName("");
     setImageFiles([]);
+    setReceivedImages([]);
     setType("image");
-    setVideoFile(null);
-    setVideoError(null);
-    setProgress(null);
-    if (setFiles && open === false) setFiles([]);
+    setVideoFiles([]);
+    setVideoErrors([]);
+    setMismatch(null);
+    setCreatedId(null);
+    setNoneUploaded(false);
+    setPhase("edit");
+    queue.clear();
+    if (setFiles) setFiles([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, setFiles]);
 
-  // warn before leaving the page while a video is uploading
+  // warn before leaving the page while videos are uploading
   useEffect(() => {
     if (!busy) return;
     const warn = (e: BeforeUnloadEvent) => {
@@ -264,16 +230,13 @@ export default function NewProjectDialog({
     return () => window.removeEventListener("beforeunload", warn);
   }, [busy]);
 
-  const percent =
-    progress && progress.total > 0
-      ? Math.min(100, Math.round((progress.loaded * 100) / progress.total))
-      : 0;
+  const otherType: ProjectType = type === "video" ? "image" : "video";
 
   return (
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        // can't close while uploading, use the Cancel button instead
+        // can't close while uploading, cancel the uploads instead
         if (busy && !next) return;
         setOpen(next);
       }}
@@ -286,24 +249,22 @@ export default function NewProjectDialog({
 
         <Label>Project Type</Label>
         <div className="grid grid-cols-2 gap-2">
-          <Button
-            type="button"
-            variant={type === "image" ? "default" : "outline"}
-            onClick={() => setType("image")}
-            disabled={busy}
-            className="inline-flex items-center gap-2"
-          >
-            <ImageIcon className="size-4" /> Images
-          </Button>
-          <Button
-            type="button"
-            variant={type === "video" ? "default" : "outline"}
-            onClick={() => setType("video")}
-            disabled={busy}
-            className="inline-flex items-center gap-2"
-          >
-            <Video className="size-4" /> Video
-          </Button>
+          {(["image", "video"] as const).map((t) => (
+            <Button
+              key={t}
+              type="button"
+              variant={type === t ? "default" : "outline"}
+              onClick={() => {
+                setType(t);
+                setMismatch(null);
+              }}
+              disabled={phase !== "edit"}
+              className="inline-flex items-center gap-2"
+            >
+              {t === "image" ? <ImageIcon className="size-4" /> : <Video className="size-4" />}
+              {TYPE_LABEL[t]}
+            </Button>
+          ))}
         </div>
 
         <Label htmlFor="project-name">Project Name</Label>
@@ -311,7 +272,7 @@ export default function NewProjectDialog({
           id="project-name"
           placeholder="Enter project name"
           value={name}
-          disabled={busy}
+          disabled={phase !== "edit"}
           onChange={(e) => setName(e.target.value)}
         />
 
@@ -319,18 +280,28 @@ export default function NewProjectDialog({
             if the user switches the type back and forth. */}
         <div className={type === "image" ? "" : "hidden"}>
           <ImageSubmissionArea
+            key={imageAreaKey}
             onDrop={(files) => setImageFiles(files)}
-            receivedFiles={files}
+            receivedFiles={receivedImages}
           />
+          {videoFiles.length > 0 && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {videoFiles.length} video file(s) also selected.
+            </p>
+          )}
         </div>
 
-        {type === "video" && (
+        {type === "video" && isAnonymous && (
+          <p className="text-sm text-destructive">{UPLOAD_MESSAGES.profile}</p>
+        )}
+
+        {type === "video" && !isAnonymous && (
           <div className="flex flex-col gap-2">
-            {!videoFile ? (
+            {phase === "edit" && (
               <div
                 role="button"
                 tabIndex={0}
-                onClick={() => !busy && !reading && inputRef.current?.click()}
+                onClick={() => !reading && inputRef.current?.click()}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
                 }}
@@ -342,10 +313,10 @@ export default function NewProjectDialog({
                 onDrop={(e) => {
                   e.preventDefault();
                   setDragOver(false);
-                  if (!busy && !reading) void handleVideoFiles(e.dataTransfer.files);
+                  if (!reading) void addVideoDrop(Array.from(e.dataTransfer.files));
                 }}
                 className={cn(
-                  "flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed p-8 text-center cursor-pointer transition-colors",
+                  "flex flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed p-6 text-center cursor-pointer transition-colors",
                   dragOver ? "border-primary bg-accent" : "border-muted-foreground/30",
                 )}
               >
@@ -355,84 +326,153 @@ export default function NewProjectDialog({
                   <Upload className="size-8 text-muted-foreground" />
                 )}
                 <p className="text-sm font-medium">
-                  {reading
-                    ? "Reading the zip..."
-                    : "Drag and drop a video or a .zip, or click to choose"}
+                  {reading ? "Reading the zip..." : "Drag and drop videos or a .zip, or click to choose"}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  MP4, WebM or MOV. One video per project.
+                  MP4, WEBM or MOV · up to 500 MB and 10 minutes each
                 </p>
-              </div>
-            ) : (
-              <div className="flex items-center gap-3 rounded-md border p-3">
-                <FileVideo className="size-8 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{videoFile.name}</p>
-                  <p className="text-xs text-muted-foreground">{formatSize(videoFile.size)}</p>
-                </div>
-                {!busy && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setVideoFile(null)}
-                    title="Remove video"
-                  >
-                    <X className="size-4" />
-                  </Button>
-                )}
               </div>
             )}
 
             <input
               ref={inputRef}
               type="file"
+              multiple
               className="hidden"
               accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov,.zip,application/zip"
               onChange={(e) => {
-                void handleVideoFiles(e.target.files);
+                void addVideoDrop(Array.from(e.target.files ?? []));
                 e.target.value = ""; // allow choosing the same file again
               }}
             />
 
-            {videoError && <p className="text-sm text-destructive">{videoError}</p>}
+            {videoErrors.length > 0 && phase === "edit" && (
+              <ul className="text-sm text-destructive">
+                {videoErrors.map((err, i) => (
+                  <li key={i}>{err}</li>
+                ))}
+              </ul>
+            )}
 
-            {busy && (
-              <div className="flex flex-col gap-1">
-                <Progress value={progress?.phase === "finishing" ? 100 : percent} />
-                <p className="text-xs text-muted-foreground">
-                  {!progress
-                    ? "Creating project..."
-                    : progress.phase === "finishing"
-                      ? "Finishing..."
-                      : `Uploading... ${percent}% (${formatSize(progress.loaded)} of ${formatSize(progress.total)})`}
-                </p>
+            {phase === "edit" && videoFiles.length > 0 && (
+              <div className="flex max-h-48 flex-col gap-2 overflow-y-auto">
+                {videoFiles.map((file, i) => (
+                  <div key={file.name + i} className="flex items-center gap-3 rounded-md border p-2">
+                    <FileVideo className="size-6 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{file.name}</p>
+                      <p className="text-xs text-muted-foreground">{formatSize(file.size)}</p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setVideoFiles((prev) => prev.filter((_, j) => j !== i))}
+                      title="Remove video"
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </div>
+                ))}
               </div>
             )}
+
+            {phase !== "edit" && <VideoUploadList items={queue.items} onCancel={queue.cancel} />}
+
+            {phase === "uploading" && queue.items.length === 0 && (
+              <p className="text-xs text-muted-foreground">Creating project...</p>
+            )}
+            {noneUploaded && <p className="text-sm text-destructive">{UPLOAD_MESSAGES.none}</p>}
+            {createdId && (
+              <p className="text-sm text-muted-foreground">
+                The project was created with the videos marked Done.
+              </p>
+            )}
+          </div>
+        )}
+
+        {mismatch && (
+          <div className="flex flex-col gap-2 rounded-md border border-destructive/50 p-3">
+            <p className="flex items-center gap-2 text-sm font-medium">
+              <AlertTriangle className="size-4 text-destructive" />
+              Some files don&apos;t match a {TYPE_LABEL[type]} project
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {mismatch
+                .slice(0, 5)
+                .map((f) => f.name)
+                .join(", ")}
+              {mismatch.length > 5 ? ` and ${mismatch.length - 5} more` : ""}. Change the
+              project type, remove these files, or cancel. No project was created.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                onClick={() => {
+                  setType(otherType);
+                  setMismatch(null);
+                }}
+              >
+                Change to {TYPE_LABEL[otherType]}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  if (type === "video") resetImages();
+                  else setVideoFiles([]);
+                  setMismatch(null);
+                }}
+              >
+                Remove these files
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setMismatch(null)}>
+                Cancel
+              </Button>
+            </div>
           </div>
         )}
 
         <DialogFooter>
           {busy && type === "video" && (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => abortRef.current?.abort()}
-              disabled={!abortRef.current}
-            >
-              Cancel upload
+            <Button type="button" variant="outline" onClick={queue.cancelAll}>
+              Cancel all
             </Button>
           )}
-          <Button
-            onClick={() => handleCreate()}
-            disabled={!canCreate}
-            className="inline-flex items-center gap-1"
-          >
-            <span>Create</span>
-            {(addProject.isPending || busy) && (
-              <LoaderCircle className="size-[1em] animate-spin" />
-            )}
-          </Button>
+          {phase === "finished" ? (
+            createdId ? (
+              <Button
+                onClick={() => {
+                  setOpen(false);
+                  router.push(`/dashboard/${createdId}`);
+                }}
+              >
+                Open project
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  queue.clear();
+                  setNoneUploaded(false);
+                  setPhase("edit");
+                }}
+              >
+                Back
+              </Button>
+            )
+          ) : (
+            <Button
+              onClick={() => handleCreate()}
+              disabled={!canCreate}
+              className="inline-flex items-center gap-1"
+            >
+              <span>Create</span>
+              {(addProject.isPending || busy) && (
+                <LoaderCircle className="size-[1em] animate-spin" />
+              )}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -9,7 +9,7 @@ const wrap = (fn) => async (req, res) => {
   try {
     res.json(await fn(req));
   } catch (err) {
-    res.status(err.status || 500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 };
 
@@ -27,7 +27,13 @@ router.post("/sign", wrap(async (req) => {
 router.post("/complete", wrap(async (req) => {
   const { bucket, key, uploadId, parts } = req.body;
   const done = await v.complete(bucket, key, uploadId, parts);
-  return { key, size: done.size };
+  return { key, ...done };
+}));
+
+// Keeps an upload alive for the cleaner while its pieces are being sent.
+router.post("/touch", wrap(async (req) => {
+  v.touch(String(req.body.uploadId || ""));
+  return { ok: true };
 }));
 
 router.post("/abort", wrap(async (req) => {

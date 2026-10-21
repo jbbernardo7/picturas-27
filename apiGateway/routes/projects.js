@@ -987,6 +987,23 @@ router.post(
 );
 
 /**
+ * Heartbeat while pieces are being sent, so the storage cleaner doesn't treat a
+ * slow upload as abandoned.
+ * @body { bucket, key, uploadId }
+ */
+router.post(
+  "/:user/:project/video/touch",
+  auth.checkToken,
+  requireVideoOwner,
+  requireOwnVideoUpload,
+  (req, res) => {
+    forwardVideo(res, () =>
+      axios.post(`${videoStorageURL}/video/touch`, { uploadId: req.body.uploadId }),
+    );
+  },
+);
+
+/**
  * Finish the upload and attach the video to the project.
  * @body { bucket, key, uploadId, parts: [{ PartNumber, ETag }], name }
  * @returns 201 { _id, name, size, contentType, status } (+ X-Project-Version)

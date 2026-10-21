@@ -765,12 +765,20 @@ router.delete("/:user/:project/share/:shareId", requireOwner, enforcePresenceLim
 // ================== FIM SHARING ==================
 
 // Get list of all projects from a user
-router.get("/:user", (req, res, next) => {
+router.get("/:user", async (req, res, next) => {
+  // A video project whose upload never finished (e.g. browser closed) is removed after a while.
+  try {
+    await Project.deleteStalePending(req.params.user, PENDING_PROJECT_TTL_MS);
+  } catch (err) {
+    console.error("[video] stale pending cleanup failed:", err.message);
+  }
+
   Project.getAll(req.params.user)
     .then((projects) => {
       const ans = [];
 
       for (let p of projects) {
+        if (p.pending) continue; // video project still waiting for its first video (RN6)
         ans.push({
           _id: p._id,
           name: p.name,
@@ -1048,12 +1056,17 @@ router.post("/:user", (req, res, next) => {
     name: req.body.name,
     user_id: req.params.user,
     type,
+    pending: type === "video",
     imgs: [],
     tools: [],
   };
 
-  Project.create(project)
-    .then((project) => res.status(201).jsonp(project))
+  const allowed = type === "video" ? canUploadVideos(req.params.user) : Promise.resolve(true);
+  allowed
+    .then((ok) => {
+      if (!ok) return res.status(403).jsonp(VIDEO_PROFILE_ERROR);
+      return Project.create(project).then((project) => res.status(201).jsonp(project));
+    })
     .catch((_) => res.status(502).jsonp(`Error creating new project`));
 });
 
@@ -1224,7 +1237,7 @@ router.post(
     Project.getOne(req.params.user, req.params.project)
       .then(async (project) => {
         if (project.type === "video") {
-          res.status(400).jsonp("Video projects can't contain images.");
+          res.status(400).jsonp("Invalid project type: video projects can't contain images.");
           return;
         }
 
@@ -2642,9 +2655,18 @@ router.post(
 
 // ================== VIDEO PROJECTS ==================
 
-// A video project holds at most this many videos. The schema already supports
-// several, so raising this later is a one-line change.
-const MAX_VIDEOS_PER_PROJECT = 1;
+// UC-VID-001 E1 / RN1: only registered (free) and premium users upload videos.
+const VIDEO_UPLOADER_TYPES = ["free", "premium"];
+const VIDEO_PROFILE_ERROR = "Only premium/registered users can upload videos!";
+const NOT_VIDEO_PROJECT = "Invalid project type: this is not a video project.";
+
+// A pending video project (no video stored yet) is deleted after this long.
+const PENDING_PROJECT_TTL_MS = 6 * 60 * 60 * 1000;
+
+async function canUploadVideos(userId) {
+  const resp = await axios.get(users_ms + `${userId}/type`, { httpsAgent });
+  return VIDEO_UPLOADER_TYPES.includes(resp.data?.type);
+}
 
 // Procedures that only make sense for video projects. Empty until the first
 // video tool exists; add the procedure names here when they do.
@@ -2674,13 +2696,12 @@ router.post(
     try {
       const project = await Project.getOne(req.params.user, req.params.project);
       if (!project) return res.status(404).jsonp("Project not found");
-      if (project.type !== "video") {
-        return res.status(400).jsonp("This is not a video project.");
+      // Profile first, before any file check (E1).
+      if (!(await canUploadVideos(req.params.user))) {
+        return res.status(403).jsonp(VIDEO_PROFILE_ERROR);
       }
-      if ((project.videos || []).length >= MAX_VIDEOS_PER_PROJECT) {
-        return res
-          .status(409)
-          .jsonp("This project already has the maximum number of videos.");
+      if (project.type !== "video") {
+        return res.status(400).jsonp(NOT_VIDEO_PROJECT);
       }
 
       const { contentType, size } = req.body || {};
@@ -2731,14 +2752,10 @@ router.post(
       const project = await Project.getOne(user, projectId);
       if (!project) return res.status(404).jsonp("Project not found");
       if (project.type !== "video") {
-        return res.status(400).jsonp("This is not a video project.");
-      }
-      if ((project.videos || []).length >= MAX_VIDEOS_PER_PROJECT) {
-        return res
-          .status(409)
-          .jsonp("This project already has the maximum number of videos.");
+        return res.status(400).jsonp(NOT_VIDEO_PROJECT);
       }
 
+      // Storage joins the pieces and checks content, codec and duration (422 if invalid).
       // The bucket is derived here, never taken from the client.
       const done = await complete_video(`user-${user}`, key, uploadId, parts);
 
@@ -2750,12 +2767,14 @@ router.post(
           og_video_key: fileKey,
           content_type: mime.lookup(fileKey) || "video/mp4",
           size: done.data?.size ?? 0,
-        },
-        MAX_VIDEOS_PER_PROJECT
+          og_sha256: done.data?.sha256 ?? "",
+          duration: done.data?.duration ?? 0,
+          codec: done.data?.codec ?? "",
+        }
       );
 
       if (!updated) {
-        // Lost a race (project deleted, or filled by a concurrent upload).
+        // Lost a race (project deleted while uploading).
         try {
           await delete_image(user, projectId, "src", fileKey);
         } catch (_) {}

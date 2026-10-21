@@ -2,14 +2,28 @@
 
 import { useToast } from "@/hooks/use-toast";
 import React, { useState } from "react";
-import Dropzone from "react-dropzone";
+import Dropzone, { type Accept } from "react-dropzone";
+
+const IMAGE_ACCEPT: Accept = {
+  "image/png": [".png"],
+  "image/jpeg": [".jpeg"],
+  "image/jpg": [".jpg"],
+  "application/zip": [".zip"],
+};
 
 interface CustomDropzoneProps {
   onDrop: (acceptedFiles: File[]) => void;
   children?: React.ReactNode;
+  accept?: Accept;
+  rejectDescription?: string;
 }
 
-export default function AppDropzone({ onDrop, children }: CustomDropzoneProps) {
+export default function AppDropzone({
+  onDrop,
+  children,
+  accept = IMAGE_ACCEPT,
+  rejectDescription = "Please upload a .png, .jpeg, .jpg, or .zip file",
+}: CustomDropzoneProps) {
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const { toast } = useToast();
 
@@ -24,16 +38,11 @@ export default function AppDropzone({ onDrop, children }: CustomDropzoneProps) {
           setIsDragging(false);
           toast({
             title: "Invalid file type!",
-            description: "Please upload a .png, .jpeg, .jpg, or .zip file",
+            description: rejectDescription,
             variant: "destructive",
           });
         }}
-        accept={{
-          "image/png": [".png"],
-          "image/jpeg": [".jpeg"],
-          "image/jpg": [".jpg"],
-          "application/zip": [".zip"],
-        }}
+        accept={accept}
       >
         {({ getRootProps, getInputProps }) => (
           <div
