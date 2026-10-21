@@ -160,6 +160,13 @@
             "arguments": {}
         },
         {
+            "name": "compress_queue",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {}
+        },
+        {
             "name": "ws_queue",
             "vhost": "/",
             "durable": true,
@@ -321,6 +328,14 @@
             "destination": "watermark_queue",
             "destination_type": "queue",
             "routing_key": "watermark_queue",
+            "arguments": {}
+        },
+        {
+            "source": "picturas",
+            "vhost": "/",
+            "destination": "compress_queue",
+            "destination_type": "queue",
+            "routing_key": "compress_queue",
             "arguments": {}
         },
         {

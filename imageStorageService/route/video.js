@@ -36,4 +36,12 @@ router.post("/abort", wrap(async (req) => {
   return { aborted: true };
 }));
 
+// Internal: store a video that a tool left on the shared volume (see storeFromDisk).
+// Not exposed through the gateway or nginx.
+router.post("/store", wrap(async (req) => {
+  const { userId, projectId, stage, path: relPath } = req.body;
+  if (!allowedStages.includes(stage)) throw v.fail(400, "Estágio inválido.");
+  return v.storeFromDisk(userId, projectId, stage, relPath);
+}));
+
 module.exports = router;

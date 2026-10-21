@@ -55,6 +55,13 @@ export interface ProjectImage {
   url: string;
 }
 
+// A finished (edited) video, as listed in the results
+export interface ResultVideo {
+  _id: string;
+  name: string;
+  url: string;
+}
+
 export interface ProjectImageText {
   _id: string;
   name: string;
@@ -851,6 +858,11 @@ export const fetchProjectResults = async (
       name: string;
       url: string;
     }[];
+    videos?: {
+      og_img_id: string;
+      name: string;
+      url: string;
+    }[];
   }>(`/projects/${pathUid}/${pid}/process/url${query}`, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -886,6 +898,14 @@ export const fetchProjectResults = async (
         }) as ProjectImage,
     ),
     texts: texts,
+    videos: (response.data.videos ?? []).map(
+      (v) =>
+        ({
+          _id: v.og_img_id,
+          name: v.name,
+          url: v.url,
+        }) as ResultVideo,
+    ),
   };
 };
 

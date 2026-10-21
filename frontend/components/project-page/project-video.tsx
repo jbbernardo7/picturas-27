@@ -26,14 +26,19 @@ import { getErrorMessage } from "@/lib/error-messages";
 import type { ProjectVideo as ProjectVideoData } from "@/lib/projects";
 import { useDeleteProjectVideo } from "@/lib/mutations/videos";
 
+// Only what is needed to show a video: results (edited videos) have no size or status.
+type VideoLike = Pick<ProjectVideoData, "_id" | "name" | "url">;
+
 interface VideoItemProps {
-  video: ProjectVideoData;
+  video: VideoLike;
+  // results can be watched and downloaded, but not deleted from here
+  readOnly?: boolean;
   // false: thumbnail card for the grid. true: full player for the carousel.
   player?: boolean;
   animation?: boolean;
 }
 
-export function downloadVideo(video: ProjectVideoData) {
+export function downloadVideo(video: VideoLike) {
   const a = document.createElement("a");
   a.href = video.url;
   a.download = video.name;
@@ -42,7 +47,7 @@ export function downloadVideo(video: ProjectVideoData) {
   a.remove();
 }
 
-export function ProjectVideo({ video, player = false, animation = true }: VideoItemProps) {
+export function ProjectVideo({ video, readOnly = false, player = false, animation = true }: VideoItemProps) {
   const searchParams = useSearchParams();
   const [open, setOpen] = useState<boolean>(false);
 
@@ -52,7 +57,7 @@ export function ProjectVideo({ video, player = false, animation = true }: VideoI
   const ownerId = searchParams.get("owner") ?? session.user._id;
   const shareId = searchParams.get("share") ?? undefined;
   // the backend only lets the owner delete videos
-  const canDelete = canEdit && session.user._id === ownerId;
+  const canDelete = !readOnly && canEdit && session.user._id === ownerId;
 
   const deleteVideo = useDeleteProjectVideo(
     session.user._id,

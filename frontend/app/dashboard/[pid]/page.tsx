@@ -6,6 +6,11 @@ import { ProjectImageList } from "@/components/project-page/project-image-list";
 import { ProjectVideoList } from "@/components/project-page/project-video-list";
 import { AddVideoDialog } from "@/components/project-page/add-video-dialog";
 import { downloadVideo } from "@/components/project-page/project-video";
+import {
+  MAX_ZIP_BYTES,
+  totalVideoBytes,
+  useDownloadProjectVideosZip,
+} from "@/lib/mutations/videos";
 import { ViewToggle } from "@/components/project-page/view-toggle";
 import { AddImagesDialog } from "@/components/project-page/add-images-dialog";
 import { Button } from "@/components/ui/button";
@@ -84,6 +89,7 @@ export default function Project({
   );
   const downloadProjectResults = useDownloadProjectResults();
   const downloadProjectPdf = useDownloadProjectPdf();
+  const downloadProjectVideos = useDownloadProjectVideosZip();
   const router = useRouter();
   const path = usePathname();
   const sidebar = useSidebar();
@@ -107,8 +113,12 @@ export default function Project({
   // se um processamento envolve ferramentas de IA ou não
   const processIsAiRef = useRef<boolean>(false);
 
+  // one update per tool and per item (image or video)
   const totalProcessingSteps =
-    (project.data?.tools.length ?? 0) * (project.data?.imgs.length ?? 0);
+    (project.data?.tools.length ?? 0) *
+    (project.data?.type === "video"
+      ? (project.data?.videos?.length ?? 0)
+      : (project.data?.imgs.length ?? 0));
   const projectResults = useGetProjectResults(
     session.user._id,
     pid,
@@ -535,6 +545,11 @@ if (project.isError) {
 
 // projetos de vídeo não usam a grelha de imagens, nem as ferramentas de imagem
 const isVideo = project.data.type === "video";
+// what the download button offers: the originals in edit mode, the edited videos in results mode
+const downloadableVideos =
+  mode === "results"
+    ? projectResults.data.videos
+    : (project.data.videos ?? []);
 
 const handleCancel = () => {
   // ignorar updates vindos do socket
@@ -826,31 +841,87 @@ const handleCancel = () => {
                       </DropdownMenuContent>
                     </DropdownMenu>
               ) : (
-                <Button
-                  variant="outline"
-                  className="px-3"
-                  title={
-                    (project.data.videos?.length ?? 0) > 1
-                      ? "Download videos"
-                      : "Download video"
-                  }
-                  disabled={
-                    mode === "results" || (project.data.videos?.length ?? 0) === 0
-                  }
-                  onClick={() => {
-                    const vids = project.data.videos ?? [];
-                    // staggered, so the browser doesn't block several downloads at once
-                    vids.forEach((v, i) => setTimeout(() => downloadVideo(v), i * 500));
-                    toast({
-                      title:
-                        vids.length > 1
-                          ? `${vids.length} videos downloading.`
-                          : `Video ${vids[0]?.name} downloading.`,
-                    });
-                  }}
-                >
-                  <Download />
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="px-3"
+                      title="Download project"
+                      disabled={
+                        downloadableVideos.length === 0 ||
+                        downloadProjectVideos.isPending
+                      }
+                    >
+                      {downloadProjectVideos.isPending ? (
+                        <LoaderCircle className="animate-spin" />
+                      ) : (
+                        <Download />
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+
+                  <DropdownMenuContent align="end">
+                    {/* direct download: nothing is loaded into memory, any size */}
+                    <DropdownMenuItem
+                      onClick={() => {
+                        const vids = downloadableVideos;
+                        // staggered, so the browser doesn't block several downloads at once
+                        vids.forEach((v, i) => setTimeout(() => downloadVideo(v), i * 500));
+                        toast({
+                          title:
+                            vids.length > 1
+                              ? `${vids.length} videos downloading.`
+                              : `Video ${vids[0]?.name} downloading.`,
+                        });
+                      }}
+                    >
+                      {mode === "results"
+                        ? downloadableVideos.length > 1
+                          ? "Download results"
+                          : "Download result"
+                        : downloadableVideos.length > 1
+                          ? "Download videos"
+                          : "Download video"}
+                    </DropdownMenuItem>
+
+                    {/* one file with all the videos, built in the browser */}
+                    <DropdownMenuItem
+                      // results have no known size, so the in-browser ZIP is only for the originals
+                      disabled={downloadProjectVideos.isPending || mode === "results"}
+                      onClick={() => {
+                        const vids = project.data.videos ?? [];
+                        if (totalVideoBytes(vids) > MAX_ZIP_BYTES) {
+                          toast({
+                            title: "Videos too large for a ZIP",
+                            description:
+                              "Use \"Download video(s)\" instead. It works for any size.",
+                            variant: "destructive",
+                          });
+                          return;
+                        }
+                        downloadProjectVideos.mutate(
+                          { projectName: project.data.name, videos: vids },
+                          {
+                            onSuccess: () => {
+                              toast({
+                                title: `Videos from ${project.data.name} downloaded as ZIP.`,
+                              });
+                            },
+                            onError: (error) => {
+                              const { title, description } = getErrorMessage(
+                                "project-download",
+                                error,
+                              );
+                              toast({ title, description, variant: "destructive" });
+                            },
+                          },
+                        );
+                      }}
+                    >
+                      Download videos (ZIP)
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
 
               <div className="hidden xl:flex items-center gap-2">
@@ -865,7 +936,7 @@ const handleCancel = () => {
         <div className="h-full overflow-x-hidden flex">
         <Toolbar />
         {isVideo ? (
-          <ProjectVideoList />
+          <ProjectVideoList results={{ videos: projectResults.data.videos }} />
         ) : (
           <ProjectImageList
             setCurrentImageId={setCurrentImage}

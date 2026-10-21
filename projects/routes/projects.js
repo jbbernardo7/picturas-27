@@ -189,7 +189,7 @@ function process_msg() {
       if (msg_content.status === "error") {
         console.log(JSON.stringify(msg_content));
         if (/preview/.test(msg_id)) {
-          send_msg_client_preview_error(`update-client-preview-${uuidv4()}`, timestamp, runnerId, msg_content.error.code, msg_content.error.msg)
+          send_msg_client_preview_error(`update-client-preview-${uuidv4()}`, timestamp, runnerId, msg_content.error.code, (msg_content.error.msg ?? msg_content.error.message))
         }
         
         else {
@@ -198,7 +198,7 @@ function process_msg() {
             timestamp,
             runnerId,   
             msg_content.error.code,
-            msg_content.error.msg
+            (msg_content.error.msg ?? msg_content.error.message)
           );
         }
         return;
@@ -338,7 +338,7 @@ if (/preview/.test(msg_id) && (type == "text" || next_pos >= project.tools.lengt
 
       if(/preview/.test(msg_id) && next_pos >= project.tools.length) return;
 
-      if (!/preview/.test(msg_id))
+      if (!/preview/.test(msg_id) && project.type !== "video")
         send_msg_client(
           user_msg_id,
           timestamp,
@@ -427,6 +427,11 @@ if (/preview/.test(msg_id) && (type == "text" || next_pos >= project.tools.lengt
             );
           }
         }
+      }
+
+      // videos: tell the client now, after the result is stored and committed
+      if (project.type === "video" && !/preview/.test(msg_id)) {
+        send_msg_client(user_msg_id, timestamp, runnerId);
       }
 
       if (next_pos >= project.tools.length) return;
@@ -1002,12 +1007,13 @@ router.get("/:user/:project/process/url", checkSharePermission, async (req, res)
 
     const results = await Result.getAllByToken(req.params.user, req.params.project, committed);
 
-    const ans = { imgs: [], texts: [] };
+    const ans = { imgs: [], texts: [], videos: [] };
     for (const r of results) {
       const resp = await get_image_public_url(r.user_id, r.project_id, "out", r.img_key);
       const url = resp.data.url;
 
-      if (r.type === "text") ans.texts.push({ og_img_id: r.img_id, name: r.file_name, url });
+      if (r.type === "video") ans.videos.push({ og_img_id: r.img_id, name: r.file_name, url });
+      else if (r.type === "text") ans.texts.push({ og_img_id: r.img_id, name: r.file_name, url });
       else ans.imgs.push({ og_img_id: r.img_id, name: r.file_name, url });
     }
 
@@ -1493,9 +1499,22 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
 
         fs.mkdirSync(path.join(__dirname, result_path), { recursive: true });
 
+        // [video] items: a video project loops over its videos exactly like an image
+        // project loops over its images. The source keeps its stored name, the result
+        // keeps the original name (as MP4).
+        const items =
+          project.type === "video"
+            ? (project.videos || []).map((v) => ({
+                _id: v._id,
+                og_img_key: v.og_video_key,
+                og_uri: `./images/users/${ownerId}/projects/${req.params.project}/src/${v.og_video_key}`,
+                new_uri: `./images/users/${ownerId}/projects/${req.params.project}/out/${path.parse(v.name).name}.mp4`,
+              }))
+            : project.imgs;
+
         let error = false;
 
-        for (let img of project.imgs) {
+        for (let img of items) {
           let url = "";
           try {
             const resp = await get_image_internal_url(
@@ -2629,7 +2648,7 @@ const MAX_VIDEOS_PER_PROJECT = 1;
 
 // Procedures that only make sense for video projects. Empty until the first
 // video tool exists; add the procedure names here when they do.
-const VIDEO_TOOLS = [];
+const VIDEO_TOOLS = ["compress"];
 
 function toolAllowedFor(type, procedure) {
   return type === "video"

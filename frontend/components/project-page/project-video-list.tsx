@@ -12,9 +12,10 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCanEditProject, useProjectInfo } from "@/providers/project-provider";
 import { useSession } from "@/providers/session-provider";
+import type { ResultVideo } from "@/lib/projects";
 import { ProjectVideo } from "./project-video";
 
-export function ProjectVideoList() {
+export function ProjectVideoList({ results }: { results: { videos: ResultVideo[] } }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const view = searchParams.get("view") ?? "grid";
@@ -30,8 +31,11 @@ export function ProjectVideoList() {
   const project = useProjectInfo();
   const canEdit = useCanEditProject();
   const session = useSession();
-  const videos = project.videos ?? [];
   const isOwner = session.user._id === (owner ?? session.user._id);
+
+  // edit mode: the project's videos. results mode: the edited videos.
+  const isResults = mode === "results";
+  const videos = isResults ? results.videos : (project.videos ?? []);
 
   useEffect(() => {
     if (view === "grid") {
@@ -63,17 +67,6 @@ export function ProjectVideoList() {
     };
   }, [api, jumpTo, videos.length]);
 
-  // Video tools don't produce results yet, so the results mode is just an empty state.
-  if (mode === "results") {
-    return (
-      <div className="size-full flex flex-col items-center justify-center">
-        <p className="text-gray-500 text-xl">
-          No results found. Apply your changes and try again.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="size-full">
       {view === "grid" || videos.length <= 0 ? (
@@ -82,7 +75,7 @@ export function ProjectVideoList() {
           {videos.length > 0 ? (
             <>
               <div className="relative pt-4 pb-2 text-gray-500 text-sm after:h-2 after:bg-gradient-to-b after:from-background after:to-background/10 after:w-full after:absolute after:bottom-0 after:translate-y-2 after:z-50 w-full text-center flex flex-col">
-                To start editing, select a video from the grid.
+                Select a video from the grid to watch it.
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2 p-2 overflow-scroll overflow-x-hidden h-fit">
                 {videos.map((video, index) => (
@@ -93,7 +86,7 @@ export function ProjectVideoList() {
                       setJumpTo(index);
 
                       const params = new URLSearchParams();
-                      params.set("mode", "edit");
+                      params.set("mode", mode);
                       params.set("view", "carousel");
                       if (owner) params.set("owner", owner);
                       if (share) params.set("share", share);
@@ -101,7 +94,7 @@ export function ProjectVideoList() {
                       router.push(`?${params.toString()}`);
                     }}
                   >
-                    <ProjectVideo video={video} />
+                    <ProjectVideo video={video} readOnly={isResults} />
                   </button>
                 ))}
               </div>
@@ -109,9 +102,11 @@ export function ProjectVideoList() {
           ) : (
             <div className="flex flex-col items-center justify-center h-full">
               <p className="text-gray-500 text-xl">
-                {canEdit && isOwner
-                  ? "Add a video to start."
-                  : "This project has no videos."}
+                {isResults
+                  ? "No results found. Apply your changes and try again."
+                  : canEdit && isOwner
+                    ? "Add a video to start."
+                    : "This project has no videos."}
               </p>
             </div>
           )}
@@ -123,7 +118,7 @@ export function ProjectVideoList() {
             <CarouselContent className="aspect-auto h-[calc(100vh-99px-0.5rem-36px)] xl:h-[calc(100vh-55px-0.5rem-36px)]">
               {videos.map((video) => (
                 <CarouselItem key={video._id}>
-                  <ProjectVideo video={video} player animation={false} />
+                  <ProjectVideo video={video} readOnly={isResults} player animation={false} />
                 </CarouselItem>
               ))}
             </CarouselContent>

@@ -37,6 +37,11 @@ export interface SaturationToolParams {
   saturationFactor: number; // 0.0 - 2.0 (1.0 normal image)
 }
 
+export interface CompressToolParams {
+  // light = best quality / bigger file, strong = smallest file / lower quality
+  level: "light" | "medium" | "strong";
+}
+
 export type ExpandMode = "reflect" | "edge" | "solid" | "generative";
 
 export type ExpandAiParams = {
@@ -71,6 +76,7 @@ export type ToolParams =
   | ResizeToolParams
   | RotateToolParams
   | SaturationToolParams
+  | CompressToolParams
   | ExpandAiParams
   | object;
 
@@ -92,16 +98,17 @@ export type ToolNames =
   | "obj_ai"
   | "people_ai"
   | "expand_ai"
+  | "compress"
   | "project";
 
 // ---------------------------------------------------------------------------
 // Video tools
 // ---------------------------------------------------------------------------
 
-// Tools that only work on video projects. Empty until the first video tool exists.
+// Tools that only work on video projects.
 // Keep in sync with VIDEO_TOOLS in projects/routes/projects.js: the backend rejects
 // any tool that is not allowed for the project's type.
-export const VIDEO_TOOL_NAMES: ToolNames[] = [];
+export const VIDEO_TOOL_NAMES: ToolNames[] = ["compress"];
 
 // Same rule as toolAllowedFor() in the projects service: video projects only get
 // video tools, image projects get everything else.

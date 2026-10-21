@@ -41,6 +41,8 @@ interface ToolbarButtonProps {
   tool: Omit<ProjectTool, "position">;
   children?: React.ReactNode;
   noParams?: boolean;
+  // tools that have no quick preview (video tools): hides the Preview button
+  noPreview?: boolean;
   onDefault?: () => void;
 }
 
@@ -56,6 +58,7 @@ export function ToolbarButton({
   tool,
   children,
   noParams = false,
+  noPreview = false,
   onDefault = () => {},
 }: ToolbarButtonProps) {
   const router = useRouter();
@@ -182,7 +185,7 @@ export function ToolbarButton({
     if (!canEdit) return;
     const afterSuccess = () => {
       setHasUnsavedChanges(false); // acabou de guardar
-      if (runPreview) handlePreview();
+      if (runPreview && !noPreview) handlePreview();
     };
 
     if (prevTool) {
@@ -363,14 +366,16 @@ export function ToolbarButton({
             Default
           </Button>
 
-          <Button
-            variant="outline"
-            onClick={() => handleAddTool(true)}
-            className="h-6 text-xs"
-            disabled={isDefault}
-          >
-            Preview
-          </Button>
+          {!noPreview && (
+            <Button
+              variant="outline"
+              onClick={() => handleAddTool(true)}
+              className="h-6 text-xs"
+              disabled={isDefault}
+            >
+              Preview
+            </Button>
+          )}
 
           <Button
             onClick={() => handleAddTool(false)}

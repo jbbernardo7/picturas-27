@@ -31,6 +31,7 @@ import {
 import { Eraser } from "lucide-react";
 import { useState } from "react";
 import ExpandAITool from "./expand-ai-tool";
+import CompressTool from "./compress-tool";
 import { isToolAllowedFor, VIDEO_TOOL_NAMES, type ToolNames } from "@/lib/tool-types";
 
 export function Toolbar() {
@@ -38,10 +39,12 @@ export function Toolbar() {
   const view = searchParams.get("view") ?? "grid";
   const mode = searchParams.get("mode") ?? "edit";
 
-  // desativar ferramentas se estiver em grid OU em results
-  const disabled = view === "grid" || mode === "results";
-
   const project = useProjectInfo();
+  const isVideo = project.type === "video";
+
+  // desativar ferramentas se estiver em grid OU em results (igual nas imagens e nos vídeos:
+  // só ficam ativas depois de abrir um item)
+  const disabled = view === "grid" || mode === "results";
   const session = useSession();
 
   const [open, setOpen] = useState<boolean>(false);
@@ -59,7 +62,6 @@ export function Toolbar() {
   // Image tools are hidden on video projects (the backend rejects them anyway).
   // The procedure names are the ones the backend knows.
   const show = (tool: ToolNames) => isToolAllowedFor(project.type, tool);
-  const isVideo = project.type === "video";
 
   return (
     <div className="flex h-full w-24 flex-col justify-between items-stretch border-r bg-background p-2">
@@ -83,8 +85,8 @@ export function Toolbar() {
         {show("expand_ai") && <ExpandAITool disabled={disabled} />}
         {show("upgrade_ai") && <UpgradeAITool disabled={disabled} />}
 
-        {/* Video tools go here, one line each, e.g.
-            {show("trim") && <TrimTool disabled={disabled} />} */}
+        {/* Video tools: one line each */}
+        {show("compress") && <CompressTool disabled={disabled} />}
         {isVideo && VIDEO_TOOL_NAMES.length === 0 && (
           <p className="px-1 text-center text-[11px] text-gray-400">
             No video tools available yet
