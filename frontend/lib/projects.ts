@@ -64,6 +64,15 @@ export interface ResultVideo {
   url: string;
 }
 
+// UC-VID-003: frames of a video stored in an image project
+export interface ResultFrames {
+  _id: string; // the source video
+  projectId: string;
+  ownerId: string;
+  projectName: string | null; // null when that project was deleted
+  count: number;
+}
+
 export interface ProjectImageText {
   _id: string;
   name: string;
@@ -865,6 +874,13 @@ export const fetchProjectResults = async (
       name: string;
       url: string;
     }[];
+    frames?: {
+      og_img_id: string;
+      project_id: string;
+      owner: string;
+      project_name: string | null;
+      count: number;
+    }[];
   }>(`/projects/${pathUid}/${pid}/process/url${query}`, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -907,6 +923,15 @@ export const fetchProjectResults = async (
           name: v.name,
           url: v.url,
         }) as ResultVideo,
+    ),
+    frames: (response.data.frames ?? []).map(
+      (f): ResultFrames => ({
+        _id: f.og_img_id,
+        projectId: f.project_id,
+        ownerId: f.owner,
+        projectName: f.project_name,
+        count: f.count,
+      }),
     ),
   };
 };

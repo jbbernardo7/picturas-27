@@ -47,6 +47,9 @@ interface ToolbarButtonProps {
   // Video tools pass one that also matches the open video.
   matchTool?: (t: ProjectToolResponse) => boolean;
   onDefault?: () => void;
+  // called on Save instead of saving right away (e.g. to ask something first);
+  // `save` stores the tool with the extra params merged in
+  onBeforeSave?: (save: (extraParams?: Record<string, unknown>) => void) => void;
 }
 
 export function ToolbarButton({
@@ -64,6 +67,7 @@ export function ToolbarButton({
   noPreview = false,
   matchTool,
   onDefault = () => {},
+  onBeforeSave,
 }: ToolbarButtonProps) {
   const router = useRouter();
   const session = useSession();
@@ -186,9 +190,10 @@ export function ToolbarButton({
     );
   }
 
-  function handleAddTool(runPreview?: boolean) {
+  function handleAddTool(runPreview?: boolean, extraParams?: Record<string, unknown>) {
     
     if (!canEdit) return;
+    const params = extraParams ? { ...tool.params, ...extraParams } : tool.params;
     const afterSuccess = () => {
       setHasUnsavedChanges(false); // acabou de guardar
       if (runPreview && !noPreview) handlePreview();
@@ -196,7 +201,7 @@ export function ToolbarButton({
 
     if (prevTool) {
       updateTool.mutate(
-        { toolId: prevTool._id, toolParams: tool.params, projectVersion: project.version },
+        { toolId: prevTool._id, toolParams: params, projectVersion: project.version },
         {
           onSuccess: afterSuccess,
           onError: (error) => {
@@ -208,7 +213,7 @@ export function ToolbarButton({
       );
     } else {
       addTool.mutate(
-        { tool: { ...tool, position: project.tools.length }, projectVersion: project.version },
+        { tool: { ...tool, params, position: project.tools.length }, projectVersion: project.version },
         {
           onSuccess: afterSuccess,
           onError: (error) => {
@@ -384,7 +389,12 @@ export function ToolbarButton({
           )}
 
           <Button
-            onClick={() => handleAddTool(false)}
+            onClick={() => {
+              if (onBeforeSave) {
+                setOpen(false);
+                onBeforeSave((extra) => handleAddTool(false, extra));
+              } else handleAddTool(false);
+            }}
             disabled={isDefault}
             className="h-6 text-xs w-full"
           >

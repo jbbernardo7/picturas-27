@@ -22,6 +22,7 @@ const queues = {
     'project': 'project_queue',
     'ws': 'ws_queue',
     'trim': 'trim_queue',
+    'extract_frames': 'extract_frames_queue',
 }
 
 function send_msg_tool(msg_id, timestamp, og_img_uri, new_img_uri, tool, params) {

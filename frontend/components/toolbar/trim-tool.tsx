@@ -12,7 +12,7 @@ import {
 } from "@/providers/project-provider";
 import { useSession } from "@/providers/session-provider";
 import type { ProjectToolResponse } from "@/lib/projects";
-import type { TrimToolParams } from "@/lib/tool-types";
+import { videoHasExtraction, type TrimToolParams } from "@/lib/tool-types";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -102,6 +102,10 @@ export default function TrimTool({ disabled }: { disabled: boolean }) {
     setHasUnsavedChanges(true);
   };
 
+  // UC-VID-003: nothing can be added after this video's frame extraction
+  const blockedByExtraction =
+    !!video && videoHasExtraction(project.tools, videoId) && !project.tools.some(matchTool);
+
   return (
     <ToolbarButton
       open={open}
@@ -116,9 +120,9 @@ export default function TrimTool({ disabled }: { disabled: boolean }) {
       }}
       // Save stays off while the interval is invalid or still the whole video.
       isDefault={invalid || (startTime === 0 && endTime === duration)}
-      disabled={disabled || !video || isAnonymous}
+      disabled={disabled || !video || isAnonymous || blockedByExtraction}
       icon={Scissors}
-      label={isAnonymous ? "Trim video (registered users only)" : "Trim video"}
+      label={blockedByExtraction ? "Remove frame extraction to add more tools" : isAnonymous ? "Trim video (registered users only)" : "Trim video"}
     >
       <div className="space-y-2">
         {video && (

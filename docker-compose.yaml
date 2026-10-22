@@ -321,7 +321,7 @@ services:
       - image_data:/app/images
 
   people_ai_tool:
-    build: 
+    build:
       context: ./Tools
       dockerfile: people_ai/Dockerfile
     networks:
@@ -334,7 +334,7 @@ services:
       - image_data:/app/images
 
   obj_ai_tool:
-    build: 
+    build:
       context: ./Tools
       dockerfile: obj_ai/Dockerfile
     networks:
@@ -369,6 +369,21 @@ services:
     environment:
       TRIM_PRESET: veryfast
       TRIM_THREADS: "2"
+    networks:
+      - elk
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - image_data:/app/images
+
+  extract_frames_tool:
+    build:
+      context: ./Tools
+      dockerfile: extract_frames/Dockerfile
+    restart: on-failure:3
+    cpus: "1"
+    mem_limit: 1g
     networks:
       - elk
     depends_on:
@@ -483,7 +498,7 @@ services:
         condition: service_healthy
     volumes:
       - image_data:/app/images
-      
+
   watermark_tool_ms:
     image: prcsousa/picturas-watermark-tool-ms:latest
     restart: always

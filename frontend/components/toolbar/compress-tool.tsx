@@ -8,7 +8,7 @@ import {
   useUnsavedChanges,
 } from "@/providers/project-provider";
 import type { ProjectToolResponse } from "@/lib/projects";
-import type { CompressToolParams } from "@/lib/tool-types";
+import { videoHasExtraction, type CompressToolParams } from "@/lib/tool-types";
 
 type Level = CompressToolParams["level"];
 
@@ -45,6 +45,10 @@ export default function CompressTool({ disabled }: { disabled: boolean }) {
     }
   }, [project.tools, open, matchTool]);
 
+  // UC-VID-003: nothing can be added after this video's frame extraction
+  const blockedByExtraction =
+    !!video && videoHasExtraction(project.tools, videoId) && !project.tools.some(matchTool);
+
   return (
     <ToolbarButton
       open={open}
@@ -65,9 +69,9 @@ export default function CompressTool({ disabled }: { disabled: boolean }) {
       isDefault={false}
       // There is no quick preview for a video.
       noPreview
-      disabled={disabled || !video}
+      disabled={disabled || !video || blockedByExtraction}
       icon={Minimize2}
-      label="Compress"
+      label={blockedByExtraction ? "Remove frame extraction to add more tools" : "Compress"}
     >
       <div className="flex w-full gap-1">
         {LEVELS.map((l) => (

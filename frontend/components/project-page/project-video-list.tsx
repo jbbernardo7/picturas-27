@@ -12,14 +12,14 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCanEditProject, useProjectInfo } from "@/providers/project-provider";
 import { useSession } from "@/providers/session-provider";
-import type { ResultVideo } from "@/lib/projects";
+import type { ResultFrames, ResultVideo } from "@/lib/projects";
 import { ProjectVideo } from "./project-video";
 
 export function ProjectVideoList({
   results,
   setCurrentVideoId,
 }: {
-  results: { videos: ResultVideo[] };
+  results: { videos: ResultVideo[]; frames?: ResultFrames[] };
   // receives the video open in the player (edit mode only), null otherwise
   setCurrentVideoId?: (id: string | null) => void;
 }) {
@@ -43,6 +43,9 @@ export function ProjectVideoList({
   // edit mode: the project's videos. results mode: the edited videos.
   const isResults = mode === "results";
   const videos = isResults ? results.videos : (project.videos ?? []);
+  // UC-VID-003: extracted frames live in an image project, linked from here
+  const frames = isResults ? (results.frames ?? []) : [];
+  const videoName = (id: string) => project.videos?.find((v) => v._id === id)?.name ?? "video";
 
   useEffect(() => {
     if (view === "grid") {
@@ -82,7 +85,28 @@ export function ProjectVideoList({
   }, [api, jumpTo, videos.length]);
 
   return (
-    <div className="size-full">
+    <div className="size-full flex flex-col">
+      {frames.length > 0 && (
+        <div className="m-2 space-y-1 rounded-md border bg-muted/40 p-3 text-sm">
+          {frames.map((f) => (
+            <div key={`${f._id}-${f.projectId}`} className="flex items-center justify-between gap-2">
+              <span>
+                {f.count} frame{f.count === 1 ? "" : "s"} of <b>{videoName(f._id)}</b> added to{" "}
+                <b>{f.projectName ?? "a project that no longer exists"}</b>
+              </span>
+              {f.projectName && f.ownerId === session.user._id && (
+                <button
+                  className="text-indigo-500 hover:underline"
+                  onClick={() => router.push(`/dashboard/${f.projectId}`)}
+                >
+                  Open project
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex-1 min-h-0">
       {view === "grid" || videos.length <= 0 ? (
         // Grid view
         <div className="size-full flex flex-col items-center">
@@ -117,7 +141,9 @@ export function ProjectVideoList({
             <div className="flex flex-col items-center justify-center h-full">
               <p className="text-gray-500 text-xl">
                 {isResults
-                  ? "No results found. Apply your changes and try again."
+                  ? frames.length > 0
+                    ? "The frames are in the image project above."
+                    : "No results found. Apply your changes and try again."
                   : canEdit && isOwner
                     ? "Add a video to start."
                     : "This project has no videos."}
@@ -144,6 +170,7 @@ export function ProjectVideoList({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

@@ -110,12 +110,6 @@ export default function Project({
   // flag para ignorar updates depois de cancelar
   const ignoreUpdatesRef = useRef(false);
 
-  // início do processamento
-  const processStartTimeRef = useRef<number | null>(null);
-
-  // se um processamento envolve ferramentas de IA ou não
-  const processIsAiRef = useRef<boolean>(false);
-
   const isVideoProject = project.data?.type === "video";
   // one update per tool and per item (image or video). A video only counts the
   // tools that target it.
@@ -314,22 +308,15 @@ useEffect(() => {
 
       if (doneSteps >= totalProcessingSteps) {
         setTimeout(() => {
-          if (ignoreUpdatesRef.current) {
-            // cancelar medição
-            processStartTimeRef.current = null;
-            processIsAiRef.current = false;
-            return;
-          }
+          if (ignoreUpdatesRef.current) return;
 
-          const startedAt = processStartTimeRef.current;
-          const isAiProcess = processIsAiRef.current;
-
-          // limpar medição
-          processStartTimeRef.current = null;
-          processIsAiRef.current = false;
-
-          projectResults.refetch().then(() => {
+          projectResults.refetch().then((res) => {
             if (ignoreUpdatesRef.current) return;
+
+            // UC-VID-003: an extraction may have created a project; refresh the library
+            if ((res.data?.frames?.length ?? 0) > 0) {
+              qc.invalidateQueries({ queryKey: ["projects"], refetchType: "all" });
+            }
 
             setProcessing(false);
             if (!isMobile) sidebar.setOpen(true);
@@ -351,45 +338,6 @@ useEffect(() => {
 
             router.push(`?${params.toString()}`);
 
-            if (startedAt != null) {
-              const durationMs = performance.now() - startedAt;
-              const seconds = durationMs / 1000;
-              const perStep =
-                totalProcessingSteps > 0
-                  ? durationMs / totalProcessingSteps
-                  : undefined;
-
-              console.log(
-                `[Perf] Processamento ${
-                  isAiProcess ? "IA" : "normal"
-                } concluído em ${seconds.toFixed(2)}s (${totalProcessingSteps} passos${
-                  perStep ? ` ~${perStep.toFixed(0)}ms/pass` : ""
-                })`,
-              );
-
-              // limiares diferentes: 5s filtros normais, 60s IA
-              const NORMAL_THRESHOLD_MS = 5000; // 5s
-              const AI_THRESHOLD_MS = 60000; // 60s
-
-              const threshold = isAiProcess
-                ? AI_THRESHOLD_MS
-                : NORMAL_THRESHOLD_MS;
-
-              if (durationMs > threshold) {
-                toast({
-                  title: isAiProcess
-                    ? "Processamento de IA demorado"
-                    : "Processamento demorado",
-                  description: isAiProcess
-                    ? `Este processamento com ferramentas de IA demorou ${seconds.toFixed(
-                        1,
-                      )} segundos. Isto ainda está dentro do limite aceitável para IA (até 1 minuto), mas foi mais lento do que o esperado.`
-                    : `Este processamento demorou ${seconds.toFixed(
-                        1,
-                      )} segundos, acima do objetivo de 5 segundos para filtros normais.`,
-                });
-              }
-            }
           });
         }, 2000);
       }
@@ -399,19 +347,6 @@ useEffect(() => {
   }
 
   function onProcessError(payload: { error_code: string; error_msg: string }) {
-    if (processStartTimeRef.current !== null) {
-      const durationMs = performance.now() - processStartTimeRef.current;
-      console.error(
-        `[Perf] Processamento ${
-          processIsAiRef.current ? "IA" : "normal"
-        } falhou após ${(durationMs / 1000).toFixed(2)}s (código ${
-          payload?.error_code ?? "N/A"
-        })`,
-      );
-      processStartTimeRef.current = null;
-      processIsAiRef.current = false;
-    }
-
     console.error("process-error", payload);
     setProcessing(false);
     setProcessingProgress(0);
@@ -567,10 +502,6 @@ const handleCancel = () => {
   // ignorar updates vindos do socket
   ignoreUpdatesRef.current = true;
 
-  // cancelar medição de tempo e tipo
-  processStartTimeRef.current = null;
-  processIsAiRef.current = false;
-
   // parar tudo no UI
   setProcessing(false);
   setProcessingProgress(0);
@@ -667,25 +598,9 @@ const handleCancel = () => {
                     }
                     className="inline-flex"
                     onClick={() => {
-                      // começa a contar o tempo
-                      processStartTimeRef.current = performance.now();
                       setProcessing(true);        
                       sidebar.setOpen(false);
                       
-                      const aiProcedures = [
-                        "bg_remove_ai",
-                        "cut_ai",
-                        "obj_ai",
-                        "people_ai",
-                        "text_ai",
-                        "upgrade_ai",
-                        "expand_ai",
-                      ];
-
-                      processIsAiRef.current = project.data.tools.some((t) =>
-                        aiProcedures.includes(t.procedure),
-                      );
-
                       processProject.mutate(
                         {
                           projectVersion: project.data.version
@@ -702,20 +617,6 @@ const handleCancel = () => {
                             });
                           },
                           onError: (error: unknown) => {
-                            if (processStartTimeRef.current !== null) {
-                              const durationMs =
-                                performance.now() - processStartTimeRef.current;
-                              console.error(
-                                `[Perf] Processamento ${
-                                  processIsAiRef.current ? "IA" : "normal"
-                                } falhou logo no arranque após ${
-                                  (durationMs / 1000).toFixed(2)
-                                }s`,
-                              );
-                              processStartTimeRef.current = null;
-                              processIsAiRef.current = false;
-                            }
-
                             const { title, description } = getErrorMessage(
                               "project-process",
                               error,
@@ -950,7 +851,7 @@ const handleCancel = () => {
         <Toolbar />
         {isVideo ? (
           <ProjectVideoList
-            results={{ videos: projectResults.data.videos }}
+            results={{ videos: projectResults.data.videos, frames: projectResults.data.frames }}
             setCurrentVideoId={setCurrentVideoId}
           />
         ) : (

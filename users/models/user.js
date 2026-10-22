@@ -4,6 +4,8 @@ const { encrypt, decrypt, hashEmail } = require("../utils/fieldCrypto");
 const daySchema = new mongoose.Schema({
   day: { type: Date, required: true },
   processed: { type: Number, default: 0, required: true },
+  // frame extractions finished today (UC-VID-003 RN5/RN8)
+  extractions: { type: Number, default: 0 },
 });
 
 const userSchema = new mongoose.Schema({

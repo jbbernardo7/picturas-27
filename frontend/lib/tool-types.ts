@@ -49,6 +49,23 @@ export interface CompressToolParams {
   level: "light" | "medium" | "strong";
 }
 
+// UC-VID-003: where the extracted frames go (always an image project)
+export type FrameDestination =
+  | { mode: "new"; name: string }
+  | { mode: "existing"; projectId: string };
+
+export interface ExtractFramesToolParams {
+  videoId: string; // the video it applies to
+  startTime: number; // seconds, on the video left by the previous tools
+  endTime: number; // seconds (excluded)
+  count: number; // 1..10 registered, 1..20 premium
+  format: "png" | "jpeg";
+  destination?: FrameDestination;
+}
+
+// Frames per extraction by profile (RN1). Same values as the projects service.
+export const MAX_FRAMES: Record<string, number> = { free: 10, premium: 20 };
+
 export type ExpandMode = "reflect" | "edge" | "solid" | "generative";
 
 export type ExpandAiParams = {
@@ -86,6 +103,7 @@ export type ToolParams =
   | CompressToolParams
   | ExpandAiParams
   | TrimToolParams
+  | ExtractFramesToolParams
   | object;
 
 export type ToolNames =
@@ -108,6 +126,7 @@ export type ToolNames =
   | "expand_ai"
   | "trim"
   | "compress"
+  | "extract_frames"
   | "project";
 
 // ---------------------------------------------------------------------------
@@ -117,7 +136,19 @@ export type ToolNames =
 // Tools that only work on video projects.
 // Keep in sync with VIDEO_TOOLS in projects/routes/projects.js: the backend rejects
 // any tool that is not allowed for the project's type.
-export const VIDEO_TOOL_NAMES: ToolNames[] = ["trim", "compress"];
+export const VIDEO_TOOL_NAMES: ToolNames[] = ["trim", "compress", "extract_frames"];
+
+// UC-VID-003: the frame extraction is always the last step of its video's chain.
+export function videoHasExtraction(
+  tools: { procedure: string; params?: unknown }[],
+  videoId: string,
+): boolean {
+  return tools.some(
+    (t) =>
+      t.procedure === "extract_frames" &&
+      (t.params as { videoId?: string } | undefined)?.videoId === videoId,
+  );
+}
 
 // In a video project each tool targets the video that was open in the player
 // (params.videoId). Same rule as toolAppliesTo() in the projects service: old

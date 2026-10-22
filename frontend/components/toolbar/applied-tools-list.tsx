@@ -85,12 +85,19 @@ export function AppliedToolsList() {
   // hover text of a video tool: which video it acts on (and the interval, for trim)
   function videoToolTitle(tool: (typeof tools)[number]): string | undefined {
     if (!isVideo) return undefined;
-    const p = tool.params as { videoId?: string; startTime?: number; endTime?: number };
+    const p = tool.params as {
+      videoId?: string;
+      startTime?: number;
+      endTime?: number;
+      count?: number;
+    };
     if (!p?.videoId) return undefined;
     const name = project.videos?.find((v) => v._id === p.videoId)?.name ?? "video";
-    return tool.procedure === "trim"
-      ? `${tool.procedure} · ${name} · ${p.startTime}s–${p.endTime}s`
-      : `${tool.procedure} · ${name}`;
+    if (tool.procedure === "trim") return `${tool.procedure} · ${name} · ${p.startTime}s–${p.endTime}s`;
+    if (tool.procedure === "extract_frames") {
+      return `${tool.procedure} · ${name} · ${p.count} frames, ${p.startTime}s–${p.endTime}s (last step)`;
+    }
+    return `${tool.procedure} · ${name}`;
   }
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
@@ -122,6 +129,22 @@ export function AppliedToolsList() {
       ...t,
       position: index,
     }));
+
+    // UC-VID-003: a video's frame extraction must stay its last step
+    const vid = (t: (typeof tools)[number]) => (t.params as { videoId?: string })?.videoId;
+    const breaksExtraction = withPositions.some(
+      (e, i) =>
+        e.procedure === "extract_frames" &&
+        withPositions.slice(i + 1).some((t) => vid(t) === vid(e)),
+    );
+    if (breaksExtraction) {
+      toast({
+        title: "Can't move this tool",
+        description: "Frame extraction must be the last step for its video.",
+        variant: "destructive",
+      });
+      return;
+    }
 
     // update UI immediately
     setTools(withPositions);
