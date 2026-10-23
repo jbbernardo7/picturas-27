@@ -25,10 +25,13 @@ module.exports.getOne = async (user_id) => {
 
 module.exports.getOneEmail = async (email) => {
   const emailHash = hashEmail(email);
-  const user = await User.findOne({ email_hash: emailHash }).exec();
-  return user ? user.toJSON() : null;
-};
+  const user = await User.findOne({ email_hash: emailHash })
+    .select("+password_hash")
+    .exec();
+  if (!user) return null;
 
+  return { ...user.toJSON(), password_hash: user.password_hash };
+};
 
 module.exports.create = async (user) => {
   try {
