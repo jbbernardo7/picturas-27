@@ -1,4 +1,3 @@
-
 var express = require("express");
 var router = express.Router();
 const axios = require("axios");
@@ -43,6 +42,8 @@ const {
   post_image,
   delete_image,
   copy_image,
+  init_video,
+  complete_video,
 } = require("../utils/imageStorage");
 
 const {
@@ -78,6 +79,10 @@ const advanced_tools = [
   "people_ai",
   "expand_ai",
 ];
+
+// Tools for registered (free) and premium users only, without counting as
+// advanced operations (UC-VID-002 trim, UC-VID-003 frame extraction).
+const REGISTERED_TOOLS = ["trim", "extract_frames"];
 
 // Conta quantas ferramentas avançadas existem neste projeto (independente de imagens)
 function count_advanced_tools(project) {
@@ -148,6 +153,122 @@ function toolsEqual(a, b) {
 }
 
 
+// UC-VID-003: stores the extracted frames as images of the destination image
+// project, all or nothing (REQ-031). A project created for this request is
+// removed again on failure. Quota is consumed only on success (RN5).
+async function deliverFrames(process, project, tool, output, runnerId) {
+  const fail = (userMessage) => Object.assign(new Error(userMessage), { userMessage });
+
+  const dest = tool?.params?.destination;
+  if (!dest) throw fail("The extraction has no destination project.");
+  const destUser = dest.userId || runnerId;
+
+  const folder = path.join(__dirname, `/../${output.imageURI}`);
+  const frames = [...(output.frames || [])].sort((a, b) => a.time - b.time);
+  if (frames.length === 0) throw fail("No frames were extracted.");
+
+  const video = (project.videos || []).find((v) => String(v._id) === String(process.img_id));
+  const stem = path.parse(video?.name || "video").name.replace(/[^\w.-]+/g, "_");
+
+  let destProject = null;
+  let created = false;
+  if (dest.mode === "new") {
+    destProject = await Project.create({
+      name: dest.name,
+      user_id: destUser,
+      type: "image",
+      imgs: [],
+      tools: [],
+    });
+    created = true;
+  } else {
+    try {
+      destProject = await Project.getOne(destUser, dest.projectId);
+    } catch (_) {}
+    if (!destProject || (destProject.type || "image") !== "image") {
+      throw fail("The destination project no longer exists or is not an image project."); // E10
+    }
+  }
+  const destId = String(destProject._id);
+
+  const taken = new Set((destProject.imgs || []).map((i) => path.basename(i.og_uri)));
+  const suffix = Date.now().toString(36);
+  const uploaded = [];
+
+  try {
+    const crypto = require("crypto");
+    const entries = [];
+    for (let i = 0; i < frames.length; i++) {
+      const f = frames[i];
+      const ext = path.extname(f.file);
+      const ms = Math.round(f.time * 1000);
+      const mm = String(Math.floor(ms / 60000)).padStart(2, "0");
+      const ss = String(Math.floor((ms % 60000) / 1000)).padStart(2, "0");
+      const mmm = String(ms % 1000).padStart(3, "0");
+      let name = `${stem}_${String(i + 1).padStart(3, "0")}_${mm}-${ss}-${mmm}${ext}`;
+      if (taken.has(name)) name = `${path.parse(name).name}_${suffix}${ext}`;
+
+      const buffer = fs.readFileSync(path.join(folder, f.file));
+      const data = new FormData();
+      data.append("file", buffer, { filename: name, contentType: mime.lookup(name) || undefined });
+      const resp = await post_image(destUser, destId, "src", data);
+      const key = resp.data.data.imageKey.split("/").pop();
+      uploaded.push(key);
+
+      entries.push({
+        og_uri: `./images/users/${destUser}/projects/${destId}/src/${name}`,
+        new_uri: `./images/users/${destUser}/projects/${destId}/out/${name}`,
+        og_img_key: key,
+        og_sha256: crypto.createHash("sha256").update(buffer).digest("hex"),
+      });
+    }
+
+    // one update: either every frame shows up in the project or none does
+    const done = await Project.updateRaw(destUser, destId, {
+      $push: { imgs: { $each: entries } },
+      $inc: { version: 1 },
+    });
+    if (!done || done.matchedCount === 0) {
+      throw fail("The destination project no longer exists."); // E10
+    }
+  } catch (err) {
+    for (const key of uploaded) {
+      try {
+        await delete_image(destUser, destId, "src", key);
+      } catch (_) {}
+    }
+    if (created) {
+      try {
+        await Project.delete(destUser, destId);
+      } catch (_) {}
+    }
+    throw err.userMessage ? err : fail("The frames could not be saved. Nothing was added.");
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+
+  await Result.create({
+    type: "frames",
+    file_name: `${stem}_frames`,
+    img_key: destId,
+    img_id: process.img_id,
+    project_id: process.project_id,
+    user_id: process.user_id,
+    token: process.token || 0,
+    dest_project_id: destId,
+    dest_user_id: destUser,
+    frame_count: frames.length,
+  });
+
+  try {
+    await axios.post(users_ms + `${runnerId}/extract/consume`, {}, { httpsAgent });
+  } catch (err) {
+    console.error("[extract_frames] quota consume failed:", err.message);
+  }
+
+  console.log(`[extract_frames] ${frames.length} frames -> project ${destId} (${dest.mode})`);
+}
+
 // TODO process message according to type of output
 function process_msg() {
   read_msg(async (msg) => {
@@ -188,7 +309,7 @@ function process_msg() {
       if (msg_content.status === "error") {
         console.log(JSON.stringify(msg_content));
         if (/preview/.test(msg_id)) {
-          send_msg_client_preview_error(`update-client-preview-${uuidv4()}`, timestamp, runnerId, msg_content.error.code, msg_content.error.msg)
+          send_msg_client_preview_error(`update-client-preview-${uuidv4()}`, timestamp, runnerId, msg_content.error.code, (msg_content.error.msg ?? msg_content.error.message))
         }
         
         else {
@@ -197,7 +318,7 @@ function process_msg() {
             timestamp,
             runnerId,   
             msg_content.error.code,
-            msg_content.error.msg
+            (msg_content.error.msg ?? msg_content.error.message)
           );
         }
         return;
@@ -220,7 +341,8 @@ function process_msg() {
         return;
       }
 
-      const next_pos = process.cur_pos + 1;
+      // video projects skip the tools that target another video
+      const next_pos = nextToolPos(project, img_id, process.cur_pos + 1);
 
 if (/preview/.test(msg_id) && (type == "text" || next_pos >= project.tools.length)) {
   const file_path = path.join(__dirname, `/../${output_file_uri}`);
@@ -337,14 +459,36 @@ if (/preview/.test(msg_id) && (type == "text" || next_pos >= project.tools.lengt
 
       if(/preview/.test(msg_id) && next_pos >= project.tools.length) return;
 
-      if (!/preview/.test(msg_id))
+      // UC-VID-003: frames go to an image project, never to this video project
+      if (type === "frames" && !/preview/.test(msg_id)) {
+        const tool = project.tools.find((t) => t.position === process.cur_pos);
+        try {
+          await deliverFrames(process, project, tool, msg_content.output, runnerId);
+        } catch (err) {
+          console.error("[extract_frames] delivery failed:", err.message);
+          send_msg_client_error(
+            user_msg_id,
+            timestamp,
+            runnerId,
+            "1804",
+            err.userMessage || "The frames could not be saved. Nothing was added."
+          );
+          return;
+        }
+      }
+
+      if (!/preview/.test(msg_id) && project.type !== "video")
         send_msg_client(
           user_msg_id,
           timestamp,
           runnerId
         );
 
-      if (!/preview/.test(msg_id) && (type == "text" || next_pos >= project.tools.length)) {
+      if (
+        !/preview/.test(msg_id) &&
+        type !== "frames" &&
+        (type == "text" || next_pos >= project.tools.length)
+      ) {
         const file_path = path.join(__dirname, `/../${output_file_uri}`);
         const file_name = path.basename(file_path);
         const fileStream = fs.createReadStream(file_path); // Use createReadStream for efficiency
@@ -428,6 +572,11 @@ if (/preview/.test(msg_id) && (type == "text" || next_pos >= project.tools.lengt
         }
       }
 
+      // videos: tell the client now, after the result is stored and committed
+      if (project.type === "video" && !/preview/.test(msg_id)) {
+        send_msg_client(user_msg_id, timestamp, runnerId);
+      }
+
       if (next_pos >= project.tools.length) return;
 
       const new_msg_id = /preview/.test(msg_id)
@@ -496,10 +645,15 @@ async function deleteProjectAndResources(userId, projectId) {
     project["imgs"].remove(img);
   }
 
+  // apagar vídeos
+  for (const v of project.videos || []) {
+    await delete_image(userId, projectId, "src", v.og_video_key);
+  }
+
   // apagar resultados
   const results = await Result.getAll(userId, projectId);
   for (let r of results) {
-    await delete_image(userId, projectId, "out", r.img_key);
+    if (r.type !== "frames") await delete_image(userId, projectId, "out", r.img_key);
     await Result.delete(r.user_id, r.project_id, r.img_id);
   }
 
@@ -658,7 +812,7 @@ router.get("/share/:shareId/project", requireAuth,async (req, res) => {
     // tentar usar resultados mais recentes
     const committed = project.committedToken || 0;
     const results = await Result.getAllByToken(project.user_id, project._id, committed);
-    const imageResults = results.filter((r) => r.type !== "text");
+    const imageResults = results.filter((r) => r.type !== "text" && r.type !== "frames");
 
     if (imageResults.length > 0) {
       // usar imagens editadas
@@ -754,15 +908,24 @@ router.delete("/:user/:project/share/:shareId", requireOwner, enforcePresenceLim
 // ================== FIM SHARING ==================
 
 // Get list of all projects from a user
-router.get("/:user", (req, res, next) => {
+router.get("/:user", async (req, res, next) => {
+  // A video project whose upload never finished (e.g. browser closed) is removed after a while.
+  try {
+    await Project.deleteStalePending(req.params.user, PENDING_PROJECT_TTL_MS);
+  } catch (err) {
+    console.error("[video] stale pending cleanup failed:", err.message);
+  }
+
   Project.getAll(req.params.user)
     .then((projects) => {
       const ans = [];
 
       for (let p of projects) {
+        if (p.pending) continue; // video project still waiting for its first video (RN6)
         ans.push({
           _id: p._id,
           name: p.name,
+          type: p.type || "image",
           version: p.version
         });
       }
@@ -813,8 +976,10 @@ router.get("/:user/:project", checkSharePermission, async (req, res, next) => {
       const response = {
         _id: project._id,
         name: project.name,
+        type: project.type || "image",
         tools: project.tools,
         imgs: [],
+        videos: [],
         version: project.version,
       };
 
@@ -835,6 +1000,29 @@ router.get("/:user/:project", checkSharePermission, async (req, res, next) => {
           });
         } catch (_) {
           res.status(404).jsonp(`Error acquiring image's url`);
+          return;
+        }
+      }
+
+      for (const v of project.videos || []) {
+        try {
+          const resp = await get_image_public_url(
+            req.params.user,
+            req.params.project,
+            "src",
+            v.og_video_key
+          );
+          response.videos.push({
+            _id: v._id,
+            name: v.name,
+            size: v.size,
+            contentType: v.content_type,
+            status: v.status,
+            duration: v.duration || 0,
+            url: resp.data.url,
+          });
+        } catch (_) {
+          res.status(404).jsonp(`Error acquiring video's url`);
           return;
         }
       }
@@ -918,6 +1106,8 @@ router.get("/:user/:project/process", checkSharePermission, (req, res, next) => 
       fs.mkdirSync(path.join(__dirname, result_path), { recursive: true });
 
       for (let r of results) {
+        // frames went to an image project: nothing to zip here
+        if (r.type === "frames") continue;
         const res_path = path.join(__dirname, result_path, r.file_name);
 
         const resp = await get_image_internal_url(
@@ -971,12 +1161,25 @@ router.get("/:user/:project/process/url", checkSharePermission, async (req, res)
 
     const results = await Result.getAllByToken(req.params.user, req.params.project, committed);
 
-    const ans = { imgs: [], texts: [] };
+    const ans = { imgs: [], texts: [], videos: [], frames: [] };
     for (const r of results) {
+      if (r.type === "frames") {
+        // UC-VID-003: the frames live in an image project; point to it
+        const dest = await Project.getOne(r.dest_user_id, r.dest_project_id).catch(() => null);
+        ans.frames.push({
+          og_img_id: r.img_id,
+          project_id: r.dest_project_id,
+          owner: r.dest_user_id,
+          project_name: dest?.name ?? null,
+          count: r.frame_count || 0,
+        });
+        continue;
+      }
       const resp = await get_image_public_url(r.user_id, r.project_id, "out", r.img_key);
       const url = resp.data.url;
 
-      if (r.type === "text") ans.texts.push({ og_img_id: r.img_id, name: r.file_name, url });
+      if (r.type === "video") ans.videos.push({ og_img_id: r.img_id, name: r.file_name, url });
+      else if (r.type === "text") ans.texts.push({ og_img_id: r.img_id, name: r.file_name, url });
       else ans.imgs.push({ og_img_id: r.img_id, name: r.file_name, url });
     }
 
@@ -1001,15 +1204,27 @@ router.get("/:user/:project/advanced_tools", checkSharePermission, (req, res, ne
 
 // Create new project
 router.post("/:user", (req, res, next) => {
+  // "image" (default) or "video"; fixed at creation
+  const type = req.body.type ?? "image";
+  if (!["image", "video"].includes(type)) {
+    return res.status(400).jsonp("type must be 'image' or 'video'");
+  }
+
   const project = {
     name: req.body.name,
     user_id: req.params.user,
+    type,
+    pending: type === "video",
     imgs: [],
     tools: [],
   };
 
-  Project.create(project)
-    .then((project) => res.status(201).jsonp(project))
+  const allowed = type === "video" ? canUploadVideos(req.params.user) : Promise.resolve(true);
+  allowed
+    .then((ok) => {
+      if (!ok) return res.status(403).jsonp(VIDEO_PROFILE_ERROR);
+      return Project.create(project).then((project) => res.status(201).jsonp(project));
+    })
     .catch((_) => res.status(502).jsonp(`Error creating new project`));
 });
 
@@ -1179,6 +1394,11 @@ router.post(
 
     Project.getOne(req.params.user, req.params.project)
       .then(async (project) => {
+        if (project.type === "video") {
+          res.status(400).jsonp("Invalid project type: video projects can't contain images.");
+          return;
+        }
+
         const same_name_img = project.imgs.filter(
           (i) => path.basename(i.og_uri) == req.file.originalname
         );
@@ -1262,7 +1482,10 @@ router.post("/:user/:project/tool", checkSharePermission, requireEditPermission,
 
   let required_types = ["free", "premium"];
 
-  if (!advanced_tools.includes(req.body.procedure))
+  if (
+    !advanced_tools.includes(req.body.procedure) &&
+    !REGISTERED_TOOLS.includes(req.body.procedure)
+  )
     required_types.push("anonymous");
 
   const callerId = getCallerId(req);
@@ -1278,6 +1501,43 @@ router.post("/:user/:project/tool", checkSharePermission, requireEditPermission,
       // Get project and insert new tool
       Project.getOne(req.params.user, req.params.project)
         .then(async (project) => {
+          if (!toolAllowedFor(project.type, req.body.procedure)) {
+            return res
+              .status(400)
+              .jsonp(`Tool '${req.body.procedure}' can't be used in a ${project.type || "image"} project`);
+          }
+
+          if (project.type === "video") {
+            const problem = videoToolProblem(
+              project, req.body.procedure, req.body.params, resp.data.type
+            );
+            if (problem) return res.status(400).jsonp(problem);
+
+            // UC-VID-003: nothing can follow the extraction of the same video
+            const videoId = String(req.body.params.videoId);
+            const hasExtraction = project.tools.some(
+              (t) => t.procedure === "extract_frames" && String(t.params?.videoId) === videoId
+            );
+            if (hasExtraction && req.body.procedure !== "extract_frames") {
+              return res.status(400).jsonp(EXTRACTION_LAST);
+            }
+            if (req.body.procedure === "extract_frames") {
+              const dest = await checkFrameDestination(req.body.params.destination, callerId);
+              if (dest.error) return res.status(400).jsonp(dest.error);
+              req.body.params = { ...req.body.params, destination: dest.value };
+            }
+            const duplicate = project.tools.some(
+              (t) =>
+                t.procedure === req.body.procedure &&
+                String(t.params?.videoId) === String(req.body.params.videoId)
+            );
+            if (duplicate) {
+              return res
+                .status(400)
+                .jsonp(`This video already has a '${req.body.procedure}' tool. Update it instead.`);
+            }
+          }
+
           const tool = { position: project.tools.length, ...req.body };
           project.tools.push(tool);
 
@@ -1329,6 +1589,15 @@ router.post(
   (req, res) => {
     Project.getOne(req.params.user, req.params.project)
       .then(async (project) => {
+        if (
+          Array.isArray(req.body) &&
+          req.body.some((t) => !toolAllowedFor(project.type, t?.procedure))
+        ) {
+          return res
+            .status(400)
+            .jsonp(`A tool in the list can't be used in a ${project.type || "image"} project`);
+        }
+
         project.tools = [];
 
         for (let t of req.body) {
@@ -1336,6 +1605,12 @@ router.post(
             position: project.tools.length,
             ...t,
           });
+        }
+
+        // UC-VID-003: the extraction stays the last step of its video
+        if (project.type === "video") {
+          const problem = extractionOrderProblem(project.tools);
+          if (problem) return res.status(400).jsonp(problem);
         }
 
         const updated = await Project.updateIfVersion(
@@ -1400,6 +1675,35 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
         return;
       }
 
+      if (
+        project.type === "video" &&
+        !(project.videos || []).some(
+          (v) => nextToolPos(project, v._id, 0) < project.tools.length
+        )
+      ) {
+        res.status(400).jsonp("No tools apply to the project's videos");
+        return;
+      }
+
+      // UC-VID-003 E5: no extraction starts without daily quota left
+      if (project.tools.some((t) => t.procedure === "extract_frames")) {
+        try {
+          const quota = await axios.get(users_ms + `${runnerUserId}/extract/check`, {
+            httpsAgent,
+          });
+          if (!quota.data?.allowed) {
+            res
+              .status(429)
+              .jsonp(`You reached your daily limit of ${quota.data?.limit ?? 0} frame extractions.`);
+            return;
+          }
+        } catch (err) {
+          console.error("[extract_frames] quota check failed:", err.message);
+          res.status(502).jsonp("Could not check the frame extraction quota.");
+          return;
+        }
+      }
+
       const { adv_ops, totalAdv, charged, newTools } = advanced_tool_num(project);
 
       console.log(
@@ -1435,9 +1739,26 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
 
         fs.mkdirSync(path.join(__dirname, result_path), { recursive: true });
 
+        // [video] items: a video project loops over its videos exactly like an image
+        // project loops over its images. The source keeps its stored name, the result
+        // keeps the original name (as MP4).
+        const items =
+          project.type === "video"
+            ? (project.videos || []).map((v) => ({
+                _id: v._id,
+                og_img_key: v.og_video_key,
+                og_uri: `./images/users/${ownerId}/projects/${req.params.project}/src/${v.og_video_key}`,
+                new_uri: `./images/users/${ownerId}/projects/${req.params.project}/out/${path.parse(v.name).name}.mp4`,
+              }))
+            : project.imgs;
+
         let error = false;
 
-        for (let img of project.imgs) {
+        for (let img of items) {
+          // a video with no tool for it is left out of this run
+          const firstPos = nextToolPos(project, img._id, 0);
+          if (firstPos >= project.tools.length) continue;
+
           let url = "";
           try {
             const resp = await get_image_internal_url(
@@ -1466,7 +1787,7 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
 
           const og_img_uri = img.og_uri;
           const new_img_uri = img.new_uri;
-          const tool = project.tools.filter((t) => t.position === 0)[0];
+          const tool = project.tools.filter((t) => t.position === firstPos)[0];
 
           const tool_name = tool.procedure;
           const params = tool.params;
@@ -1477,7 +1798,7 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
             project_id: req.params.project,
             img_id: img._id,
             msg_id: msg_id,
-            cur_pos: 0,
+            cur_pos: firstPos,
             og_img_uri: og_img_uri,
             new_img_uri: new_img_uri,
             cancelToken: project.cancelToken || 0,
@@ -1523,12 +1844,23 @@ router.post("/:user/:project/process", checkSharePermission, requireEditPermissi
               `[T-03][PROCESS][SKIP] user=${ownerId} project=${req.params.project} token=${project.committedToken}`
             );
 
-            // Notificar frontend imediatamente (não há work para fazer)
-            send_msg_client(
-              `update-client-process-${uuidv4()}`,
-              new Date().toISOString(),
-              runnerUserId
-            );
+            // Notificar frontend imediatamente (não há work para fazer).
+            // Video projects: the client waits for one update per tool and video.
+            const updates =
+              project.type === "video"
+                ? (project.videos || []).reduce(
+                    (n, v) =>
+                      n + project.tools.filter((t) => toolAppliesTo(project, t, v._id)).length,
+                    0
+                  )
+                : 1;
+            for (let i = 0; i < Math.max(1, updates); i++) {
+              send_msg_client(
+                `update-client-process-${uuidv4()}`,
+                new Date().toISOString(),
+                runnerUserId
+              );
+            }
 
             // Mantém o contrato: “process pedido” -> resposta rápida
             return res.sendStatus(201);
@@ -1698,10 +2030,26 @@ router.put(
           const tool_pos = project.tools.findIndex((i) => i._id == req.params.tool);
           const prev_tool = project.tools[tool_pos];
 
+          let params = req.body.params;
+          if (project.type === "video" && prev_tool) {
+            // a video tool keeps the video it was created for
+            params = { ...params, videoId: prev_tool.params?.videoId ?? params?.videoId };
+            let userType = null;
+            if (prev_tool.procedure === "extract_frames") {
+              const callerId = getCallerId(req);
+              userType = (await axios.get(users_ms + `${callerId}/type`, { httpsAgent })).data?.type;
+              const dest = await checkFrameDestination(params.destination, callerId);
+              if (dest.error) return res.status(400).jsonp(dest.error);
+              params = { ...params, destination: dest.value };
+            }
+            const problem = videoToolProblem(project, prev_tool.procedure, params, userType);
+            if (problem) return res.status(400).jsonp(problem);
+          }
+
           project.tools[tool_pos] = {
             position: prev_tool.position,
             procedure: prev_tool.procedure,
-            params: req.body.params,
+            params: params,
             _id: prev_tool._id,
           };
 
@@ -1733,7 +2081,7 @@ router.put(
               newVersion: updated.version,
               payload: {
                 toolId: req.params.tool,
-                params: req.body.params,
+                params: params,
               },
             },
           });
@@ -2017,7 +2365,7 @@ router.post(
       // 1) apagar resultados (DB + object storage out)
       const prev_results = await Result.getAll(ownerId, projectId);
       for (const r of prev_results) {
-        await delete_image(ownerId, projectId, "out", r.img_key);
+        if (r.type !== "frames") await delete_image(ownerId, projectId, "out", r.img_key);
         await Result.delete(r.user_id, r.project_id, r.img_id);
       }
 
@@ -2562,5 +2910,337 @@ router.post(
     }
   }
 );
+
+// ================== VIDEO PROJECTS ==================
+
+// UC-VID-001 E1 / RN1: only registered (free) and premium users upload videos.
+const VIDEO_UPLOADER_TYPES = ["free", "premium"];
+const VIDEO_PROFILE_ERROR = "Only premium/registered users can upload videos!";
+const NOT_VIDEO_PROJECT = "Invalid project type: this is not a video project.";
+
+// A pending video project (no video stored yet) is deleted after this long.
+const PENDING_PROJECT_TTL_MS = 6 * 60 * 60 * 1000;
+
+async function canUploadVideos(userId) {
+  const resp = await axios.get(users_ms + `${userId}/type`, { httpsAgent });
+  return VIDEO_UPLOADER_TYPES.includes(resp.data?.type);
+}
+
+// Procedures that only make sense for video projects. Empty until the first
+// video tool exists; add the procedure names here when they do.
+const VIDEO_TOOLS = ["trim", "compress", "extract_frames"];
+
+function toolAllowedFor(type, procedure) {
+  return type === "video"
+    ? VIDEO_TOOLS.includes(procedure)
+    : !VIDEO_TOOLS.includes(procedure);
+}
+
+// In a video project each tool targets one video (params.videoId): the one open
+// in the player. Old tools without a videoId keep applying to every video.
+// Image projects: every tool applies to every image (unchanged).
+function toolAppliesTo(project, tool, itemId) {
+  if (project.type !== "video") return true;
+  const target = tool?.params?.videoId;
+  return !target || String(target) === String(itemId);
+}
+
+// First position >= from whose tool applies to the item; tools.length when none is left.
+function nextToolPos(project, itemId, from) {
+  if (project.type !== "video") return from;
+  const n = project.tools.length;
+  for (let pos = from; pos < n; pos++) {
+    const tool = project.tools.find((t) => t.position === pos);
+    if (tool && toolAppliesTo(project, tool, itemId)) return pos;
+  }
+  return n;
+}
+
+// ---- UC-VID-003: frame extraction ----
+// Frames per request by profile (RN1) and allowed output formats (RN3).
+const MAX_FRAMES = { free: 10, premium: 20 };
+const FRAME_FORMATS = ["png", "jpeg"];
+const EXTRACTION_LAST =
+  "Frame extraction must be the last step for this video. Remove it to add other tools.";
+
+// The extraction works on the video left by the previous tools: after a trim
+// its timeline is the trimmed interval.
+function effectiveDuration(project, video) {
+  const trim = (project.tools || []).find(
+    (t) => t.procedure === "trim" && String(t.params?.videoId) === String(video._id)
+  );
+  if (trim) return Number(trim.params.endTime) - Number(trim.params.startTime);
+  return video.duration || 0;
+}
+
+// Error when the tool list puts any tool of a video after its extraction.
+function extractionOrderProblem(tools) {
+  const lastPos = {};
+  const extractPos = {};
+  for (const t of tools || []) {
+    const vid = String(t?.params?.videoId ?? "");
+    const pos = Number(t.position);
+    if (t.procedure === "extract_frames") extractPos[vid] = pos;
+    lastPos[vid] = Math.max(lastPos[vid] ?? -1, pos);
+  }
+  for (const vid of Object.keys(extractPos)) {
+    if (lastPos[vid] > extractPos[vid]) return EXTRACTION_LAST;
+  }
+  return null;
+}
+
+// Checks params.destination and returns the stored form, or { error }.
+// Only the caller's own image projects can receive frames.
+async function checkFrameDestination(destination, callerId) {
+  if (!destination || !["new", "existing"].includes(destination.mode)) {
+    return { error: "Choose where the frames go: a new project or an existing image project." };
+  }
+  if (destination.mode === "new") {
+    const name = String(destination.name || "").trim().slice(0, 100);
+    if (!name) return { error: "The new project needs a name." };
+    return { value: { mode: "new", name, userId: String(callerId) } };
+  }
+  let dest = null;
+  try {
+    dest = await Project.getOne(callerId, destination.projectId);
+  } catch (_) {}
+  if (!dest) return { error: "The destination project does not exist or is not yours." };
+  if ((dest.type || "image") !== "image" || dest.pending) {
+    return { error: "Frames can only be added to an image project." };
+  }
+  return {
+    value: { mode: "existing", projectId: String(dest._id), userId: String(callerId) },
+  };
+}
+
+// Error message for invalid video tool params, null when they are fine.
+function videoToolProblem(project, procedure, params, userType) {
+  const videoId = params?.videoId;
+  const video = (project.videos || []).find((v) => String(v._id) === String(videoId));
+  if (!video) return "Open a video of this project before adding a video tool.";
+
+  if (procedure === "extract_frames") {
+    const start = Number(params.startTime);
+    const end = Number(params.endTime);
+    const count = Number(params.count);
+    const max = MAX_FRAMES[userType] ?? 0;
+    const duration = effectiveDuration(project, video);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      return "Start and end times must be numbers (seconds).";
+    }
+    if (start < 0 || start >= end) return "Start time must be lower than end time."; // E4
+    if (duration > 0 && end > duration + 0.01) {
+      return `The interval must be inside the video duration (${duration.toFixed(2)}s).`;
+    }
+    if (!Number.isInteger(count) || count < 1) {
+      return "The number of frames must be a whole number of at least 1."; // E3
+    }
+    if (count > max) {
+      return `Your profile allows up to ${max} frames per extraction.`; // RN1 / FA4
+    }
+    if (!FRAME_FORMATS.includes(params.format)) {
+      return "Output format must be PNG or JPEG."; // E6
+    }
+  }
+
+  if (procedure === "trim") {
+    const start = Number(params.startTime);
+    const end = Number(params.endTime);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+      return "Start and end times must be numbers (seconds).";
+    }
+    // RN1
+    if (start < 0 || start >= end) return "Start time must be lower than end time.";
+    // RN2 (duration is known for videos uploaded with the ffprobe check)
+    if (video.duration > 0 && end > video.duration + 0.01) {
+      return `The interval must be inside the video duration (${video.duration.toFixed(2)}s).`;
+    }
+  }
+  return null;
+}
+
+function storageError(res, err, fallback) {
+  const status = err.response?.status || 500;
+  const data = err.response?.data || fallback;
+  console.error("[video]", status, fallback, err.message);
+  return res.status(status).jsonp(data);
+}
+
+// Start a video upload. Only video projects with room for another video.
+router.post(
+  "/:user/:project/video/init",
+  requireOwner,
+  checkSharePermission,
+  requireEditPermission,
+  enforcePresenceLimit,
+  async (req, res) => {
+    try {
+      const project = await Project.getOne(req.params.user, req.params.project);
+      if (!project) return res.status(404).jsonp("Project not found");
+      // Profile first, before any file check (E1).
+      if (!(await canUploadVideos(req.params.user))) {
+        return res.status(403).jsonp(VIDEO_PROFILE_ERROR);
+      }
+      if (project.type !== "video") {
+        return res.status(400).jsonp(NOT_VIDEO_PROJECT);
+      }
+
+      const { contentType, size } = req.body || {};
+      const resp = await init_video(
+        req.params.user,
+        req.params.project,
+        contentType,
+        Number(size)
+      );
+      return res.status(200).jsonp(resp.data);
+    } catch (err) {
+      if (err.name === "CastError") return res.status(404).jsonp("Project not found");
+      return storageError(res, err, "Error starting video upload");
+    }
+  }
+);
+
+// Finish the upload and attach the video to the project in one step, so a
+// video can't be registered unless its upload really completed.
+router.post(
+  "/:user/:project/video/complete",
+  requireOwner,
+  checkSharePermission,
+  requireEditPermission,
+  enforcePresenceLimit,
+  async (req, res) => {
+    const { user, project: projectId } = req.params;
+    const { key, uploadId, parts } = req.body || {};
+    const name = path.basename(String(req.body?.name || "")).slice(0, 255);
+
+    // key must be exactly <projectId>/src/<file>
+    const segs = typeof key === "string" ? key.split("/") : [];
+    if (
+      segs.length !== 3 ||
+      segs[0] !== projectId ||
+      segs[1] !== "src" ||
+      segs[2].includes("..")
+    ) {
+      return res.status(403).jsonp("Key does not belong to this project.");
+    }
+    if (!name) return res.status(400).jsonp("A file name is required.");
+    if (typeof uploadId !== "string" || !Array.isArray(parts)) {
+      return res.status(400).jsonp("uploadId and parts are required.");
+    }
+    const fileKey = segs[2];
+
+    try {
+      const project = await Project.getOne(user, projectId);
+      if (!project) return res.status(404).jsonp("Project not found");
+      if (project.type !== "video") {
+        return res.status(400).jsonp(NOT_VIDEO_PROJECT);
+      }
+
+      // Storage joins the pieces and checks content, codec and duration (422 if invalid).
+      // The bucket is derived here, never taken from the client.
+      const done = await complete_video(`user-${user}`, key, uploadId, parts);
+
+      const updated = await Project.addVideo(
+        user,
+        projectId,
+        {
+          name,
+          og_video_key: fileKey,
+          content_type: mime.lookup(fileKey) || "video/mp4",
+          size: done.data?.size ?? 0,
+          og_sha256: done.data?.sha256 ?? "",
+          duration: done.data?.duration ?? 0,
+          codec: done.data?.codec ?? "",
+        }
+      );
+
+      if (!updated) {
+        // Lost a race (project deleted while uploading).
+        try {
+          await delete_image(user, projectId, "src", fileKey);
+        } catch (_) {}
+        return res
+          .status(409)
+          .jsonp("Could not attach the video to the project.");
+      }
+
+      const video = updated.videos[updated.videos.length - 1];
+      res.set("X-Project-Version", String(updated.version));
+      return res.status(201).jsonp({
+        _id: video._id,
+        name: video.name,
+        size: video.size,
+        contentType: video.content_type,
+        status: video.status,
+      });
+    } catch (err) {
+      if (err.name === "CastError") return res.status(404).jsonp("Project not found");
+      return storageError(res, err, "Error completing video upload");
+    }
+  }
+);
+
+// Remove a video from a project.
+router.delete(
+  "/:user/:project/video/:video",
+  requireOwner,
+  checkSharePermission,
+  requireEditPermission,
+  enforcePresenceLimit,
+  requireProjectVersion,
+  async (req, res) => {
+    try {
+      const project = await Project.getOne(req.params.user, req.params.project);
+      if (!project) return res.status(404).jsonp("Project not found");
+
+      const video = (project.videos || []).find(
+        (v) => String(v._id) === String(req.params.video)
+      );
+      if (!video) return res.status(404).jsonp("Video not found");
+
+      const fileKey = video.og_video_key;
+      project.videos.pull(video._id);
+
+      // its tools go with it; the others keep their order
+      const kept = [...project.tools]
+        .filter((t) => String(t.params?.videoId) !== String(video._id))
+        .sort((a, b) => a.position - b.position);
+      if (kept.length !== project.tools.length) {
+        kept.forEach((t, i) => (t.position = i));
+        project.tools = kept;
+      }
+
+      // Database first: if the version check fails nothing has been lost.
+      const updated = await Project.updateIfVersion(
+        req.params.user,
+        req.params.project,
+        project,
+        req.expectedVersion
+      );
+
+      if (!updated) {
+        const fresh = await Project.getOne(req.params.user, req.params.project);
+        return res.status(409).jsonp({
+          message: "Project version conflict",
+          serverVersion: fresh?.version ?? null,
+        });
+      }
+
+      try {
+        await delete_image(req.params.user, req.params.project, "src", fileKey);
+      } catch (err) {
+        console.error("[video] object delete failed:", fileKey, err.message);
+      }
+
+      res.set("X-Project-Version", String(updated.version));
+      return res.sendStatus(204);
+    } catch (err) {
+      if (err.name === "CastError") return res.status(404).jsonp("Project not found");
+      return storageError(res, err, "Error deleting video");
+    }
+  }
+);
+
+// ================== END VIDEO PROJECTS ==================
 
 module.exports = { router, process_msg };

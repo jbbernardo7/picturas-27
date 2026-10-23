@@ -99,3 +99,20 @@ export function isValidHexColor(hex: string): boolean {
   const hexPattern = /^#?([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/;
   return hexPattern.test(hex);
 }
+
+
+const VIDEO_EXT = /\.(mp4|webm|mov)$/i;
+
+export function isVideoName(name?: string | null): boolean {
+  return !!name && VIDEO_EXT.test(name);
+}
+
+export function getVideoDuration(videoUrl: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.onloadedmetadata = () => resolve(video.duration);
+    video.onerror = () => reject(new Error("Failed to load video metadata"));
+    video.src = videoUrl;
+  });
+}

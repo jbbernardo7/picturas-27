@@ -3,6 +3,14 @@
 import { Download, LoaderCircle, OctagonAlert, Play } from "lucide-react";
 import { fetchSharedProject, resolveShareLink } from "@/lib/projects";
 import { ProjectImageList } from "@/components/project-page/project-image-list";
+import { ProjectVideoList } from "@/components/project-page/project-video-list";
+import { AddVideoDialog } from "@/components/project-page/add-video-dialog";
+import { downloadVideo } from "@/components/project-page/project-video";
+import {
+  MAX_ZIP_BYTES,
+  totalVideoBytes,
+  useDownloadProjectVideosZip,
+} from "@/lib/mutations/videos";
 import { ViewToggle } from "@/components/project-page/view-toggle";
 import { AddImagesDialog } from "@/components/project-page/add-images-dialog";
 import { Button } from "@/components/ui/button";
@@ -34,6 +42,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { ProjectImage } from "@/lib/projects";
 import { Progress } from "@/components/ui/progress";
+import { toolAppliesToVideo } from "@/lib/tool-types";
 import { Card } from "@/components/ui/card";
 import { Transition } from "@headlessui/react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -81,11 +90,14 @@ export default function Project({
   );
   const downloadProjectResults = useDownloadProjectResults();
   const downloadProjectPdf = useDownloadProjectPdf();
+  const downloadProjectVideos = useDownloadProjectVideosZip();
   const router = useRouter();
   const path = usePathname();
   const sidebar = useSidebar();
   const isMobile = useIsMobile();
   const [currentImage, setCurrentImage] = useState<ProjectImage | null>(null);
+  // video projects: the video open in the player (video tools apply only to it)
+  const [currentVideoId, setCurrentVideoId] = useState<string | null>(null);
   const [processing, setProcessing] = useState<boolean>(false);
   const [processingProgress, setProcessingProgress] = useState<number>(0);
   const [processingSteps, setProcessingSteps] = useState<number>(1);
@@ -98,14 +110,17 @@ export default function Project({
   // flag para ignorar updates depois de cancelar
   const ignoreUpdatesRef = useRef(false);
 
-  // início do processamento
-  const processStartTimeRef = useRef<number | null>(null);
-
-  // se um processamento envolve ferramentas de IA ou não
-  const processIsAiRef = useRef<boolean>(false);
-
+  const isVideoProject = project.data?.type === "video";
+  // one update per tool and per item (image or video). A video only counts the
+  // tools that target it.
   const totalProcessingSteps =
-    (project.data?.tools.length ?? 0) * (project.data?.imgs.length ?? 0);
+    project.data?.type === "video"
+      ? (project.data?.videos ?? []).reduce(
+          (sum, v) =>
+            sum + project.data!.tools.filter((t) => toolAppliesToVideo(t, v._id)).length,
+          0,
+        )
+      : (project.data?.tools.length ?? 0) * (project.data?.imgs.length ?? 0);
   const projectResults = useGetProjectResults(
     session.user._id,
     pid,
@@ -280,32 +295,28 @@ useEffect(() => {
 
     setProcessingSteps((prev) => {
       const nextSteps = prev + 1;
+      // The counter starts at 1. Videos count every update (one per tool and video),
+      // so the run only ends after the last one; images keep their rule.
+      const doneSteps = isVideoProject ? nextSteps - 1 : nextSteps;
 
       const progress =
         totalProcessingSteps > 0
-          ? Math.min(Math.round((nextSteps * 100) / totalProcessingSteps), 100)
+          ? Math.min(Math.round((doneSteps * 100) / totalProcessingSteps), 100)
           : 100;
 
       setProcessingProgress(progress);
 
-      if (nextSteps >= totalProcessingSteps) {
+      if (doneSteps >= totalProcessingSteps) {
         setTimeout(() => {
-          if (ignoreUpdatesRef.current) {
-            // cancelar medição
-            processStartTimeRef.current = null;
-            processIsAiRef.current = false;
-            return;
-          }
+          if (ignoreUpdatesRef.current) return;
 
-          const startedAt = processStartTimeRef.current;
-          const isAiProcess = processIsAiRef.current;
-
-          // limpar medição
-          processStartTimeRef.current = null;
-          processIsAiRef.current = false;
-
-          projectResults.refetch().then(() => {
+          projectResults.refetch().then((res) => {
             if (ignoreUpdatesRef.current) return;
+
+            // UC-VID-003: an extraction may have created a project; refresh the library
+            if ((res.data?.frames?.length ?? 0) > 0) {
+              qc.invalidateQueries({ queryKey: ["projects"], refetchType: "all" });
+            }
 
             setProcessing(false);
             if (!isMobile) sidebar.setOpen(true);
@@ -327,45 +338,6 @@ useEffect(() => {
 
             router.push(`?${params.toString()}`);
 
-            if (startedAt != null) {
-              const durationMs = performance.now() - startedAt;
-              const seconds = durationMs / 1000;
-              const perStep =
-                totalProcessingSteps > 0
-                  ? durationMs / totalProcessingSteps
-                  : undefined;
-
-              console.log(
-                `[Perf] Processamento ${
-                  isAiProcess ? "IA" : "normal"
-                } concluído em ${seconds.toFixed(2)}s (${totalProcessingSteps} passos${
-                  perStep ? ` ~${perStep.toFixed(0)}ms/pass` : ""
-                })`,
-              );
-
-              // limiares diferentes: 5s filtros normais, 60s IA
-              const NORMAL_THRESHOLD_MS = 5000; // 5s
-              const AI_THRESHOLD_MS = 60000; // 60s
-
-              const threshold = isAiProcess
-                ? AI_THRESHOLD_MS
-                : NORMAL_THRESHOLD_MS;
-
-              if (durationMs > threshold) {
-                toast({
-                  title: isAiProcess
-                    ? "Processamento de IA demorado"
-                    : "Processamento demorado",
-                  description: isAiProcess
-                    ? `Este processamento com ferramentas de IA demorou ${seconds.toFixed(
-                        1,
-                      )} segundos. Isto ainda está dentro do limite aceitável para IA (até 1 minuto), mas foi mais lento do que o esperado.`
-                    : `Este processamento demorou ${seconds.toFixed(
-                        1,
-                      )} segundos, acima do objetivo de 5 segundos para filtros normais.`,
-                });
-              }
-            }
           });
         }, 2000);
       }
@@ -375,19 +347,6 @@ useEffect(() => {
   }
 
   function onProcessError(payload: { error_code: string; error_msg: string }) {
-    if (processStartTimeRef.current !== null) {
-      const durationMs = performance.now() - processStartTimeRef.current;
-      console.error(
-        `[Perf] Processamento ${
-          processIsAiRef.current ? "IA" : "normal"
-        } falhou após ${(durationMs / 1000).toFixed(2)}s (código ${
-          payload?.error_code ?? "N/A"
-        })`,
-      );
-      processStartTimeRef.current = null;
-      processIsAiRef.current = false;
-    }
-
     console.error("process-error", payload);
     setProcessing(false);
     setProcessingProgress(0);
@@ -423,6 +382,7 @@ useEffect(() => {
   session.user._id,
   socket.data,
   totalProcessingSteps,
+  isVideoProject,
   sidebar,
   isMobile,
   projectResults,
@@ -530,13 +490,17 @@ if (project.isError) {
       </div>
     );
 
+// projetos de vídeo não usam a grelha de imagens, nem as ferramentas de imagem
+const isVideo = project.data.type === "video";
+// what the download button offers: the originals in edit mode, the edited videos in results mode
+const downloadableVideos =
+  mode === "results"
+    ? projectResults.data.videos
+    : (project.data.videos ?? []);
+
 const handleCancel = () => {
   // ignorar updates vindos do socket
   ignoreUpdatesRef.current = true;
-
-  // cancelar medição de tempo e tipo
-  processStartTimeRef.current = null;
-  processIsAiRef.current = false;
 
   // parar tudo no UI
   setProcessing(false);
@@ -596,6 +560,7 @@ const handleCancel = () => {
     <ProjectProvider
       project={project.data}
       currentImage={currentImage}
+      currentVideoId={currentVideoId}
       preview={{ waiting: waitingForPreview, setWaiting: setWaitingForPreview }}
       ownerId={ownerId}
       shareId={shareId}
@@ -633,25 +598,9 @@ const handleCancel = () => {
                     }
                     className="inline-flex"
                     onClick={() => {
-                      // começa a contar o tempo
-                      processStartTimeRef.current = performance.now();
                       setProcessing(true);        
                       sidebar.setOpen(false);
                       
-                      const aiProcedures = [
-                        "bg_remove_ai",
-                        "cut_ai",
-                        "obj_ai",
-                        "people_ai",
-                        "text_ai",
-                        "upgrade_ai",
-                        "expand_ai",
-                      ];
-
-                      processIsAiRef.current = project.data.tools.some((t) =>
-                        aiProcedures.includes(t.procedure),
-                      );
-
                       processProject.mutate(
                         {
                           projectVersion: project.data.version
@@ -668,20 +617,6 @@ const handleCancel = () => {
                             });
                           },
                           onError: (error: unknown) => {
-                            if (processStartTimeRef.current !== null) {
-                              const durationMs =
-                                performance.now() - processStartTimeRef.current;
-                              console.error(
-                                `[Perf] Processamento ${
-                                  processIsAiRef.current ? "IA" : "normal"
-                                } falhou logo no arranque após ${
-                                  (durationMs / 1000).toFixed(2)
-                                }s`,
-                              );
-                              processStartTimeRef.current = null;
-                              processIsAiRef.current = false;
-                            }
-
                             const { title, description } = getErrorMessage(
                               "project-process",
                               error,
@@ -699,7 +634,7 @@ const handleCancel = () => {
                     <Play /> Apply
                   </Button>
 
-          {canEdit && (
+          {canEdit && !isVideo && (
             <>
                   <AiAssistantDialog
                     uid={session.user._id}
@@ -716,6 +651,8 @@ const handleCancel = () => {
                   <AddImagesDialog />
           </>
           )}
+
+          {canEdit && isVideo && session.user._id === ownerId && <AddVideoDialog />}
                 {/* botão Share só para o owner */}
                 {session.user._id === ownerId && (
                   <ShareProjectDialog 
@@ -726,6 +663,7 @@ const handleCancel = () => {
                 </>
               )}
 
+              {!isVideo ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -816,6 +754,89 @@ const handleCancel = () => {
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
+              ) : (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="px-3"
+                      title="Download project"
+                      disabled={
+                        downloadableVideos.length === 0 ||
+                        downloadProjectVideos.isPending
+                      }
+                    >
+                      {downloadProjectVideos.isPending ? (
+                        <LoaderCircle className="animate-spin" />
+                      ) : (
+                        <Download />
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+
+                  <DropdownMenuContent align="end">
+                    {/* direct download: nothing is loaded into memory, any size */}
+                    <DropdownMenuItem
+                      onClick={() => {
+                        const vids = downloadableVideos;
+                        // staggered, so the browser doesn't block several downloads at once
+                        vids.forEach((v, i) => setTimeout(() => downloadVideo(v), i * 500));
+                        toast({
+                          title:
+                            vids.length > 1
+                              ? `${vids.length} videos downloading.`
+                              : `Video ${vids[0]?.name} downloading.`,
+                        });
+                      }}
+                    >
+                      {mode === "results"
+                        ? downloadableVideos.length > 1
+                          ? "Download results"
+                          : "Download result"
+                        : downloadableVideos.length > 1
+                          ? "Download videos"
+                          : "Download video"}
+                    </DropdownMenuItem>
+
+                    {/* one file with all the videos, built in the browser */}
+                    <DropdownMenuItem
+                      // results have no known size, so the in-browser ZIP is only for the originals
+                      disabled={downloadProjectVideos.isPending || mode === "results"}
+                      onClick={() => {
+                        const vids = project.data.videos ?? [];
+                        if (totalVideoBytes(vids) > MAX_ZIP_BYTES) {
+                          toast({
+                            title: "Videos too large for a ZIP",
+                            description:
+                              "Use \"Download video(s)\" instead. It works for any size.",
+                            variant: "destructive",
+                          });
+                          return;
+                        }
+                        downloadProjectVideos.mutate(
+                          { projectName: project.data.name, videos: vids },
+                          {
+                            onSuccess: () => {
+                              toast({
+                                title: `Videos from ${project.data.name} downloaded as ZIP.`,
+                              });
+                            },
+                            onError: (error) => {
+                              const { title, description } = getErrorMessage(
+                                "project-download",
+                                error,
+                              );
+                              toast({ title, description, variant: "destructive" });
+                            },
+                          },
+                        );
+                      }}
+                    >
+                      Download videos (ZIP)
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
 
               <div className="hidden xl:flex items-center gap-2">
                 <ViewToggle />
@@ -828,10 +849,17 @@ const handleCancel = () => {
 
         <div className="h-full overflow-x-hidden flex">
         <Toolbar />
-        <ProjectImageList
-          setCurrentImageId={setCurrentImage}
-          results={projectResults.data}
-        />
+        {isVideo ? (
+          <ProjectVideoList
+            results={{ videos: projectResults.data.videos, frames: projectResults.data.frames }}
+            setCurrentVideoId={setCurrentVideoId}
+          />
+        ) : (
+          <ProjectImageList
+            setCurrentImageId={setCurrentImage}
+            results={projectResults.data}
+          />
+        )}
       </div>
       </div>
       <Transition

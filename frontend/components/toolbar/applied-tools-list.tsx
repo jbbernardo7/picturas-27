@@ -3,7 +3,13 @@
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { SortableContext, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { SortableToolItem } from "./sortable-tool-item";
-import { useProjectInfo, useSetProjectTools, useCurrentImage } from "@/providers/project-provider";
+import {
+  useProjectInfo,
+  useSetProjectTools,
+  useCurrentImage,
+  useCurrentVideo,
+} from "@/providers/project-provider";
+import { toolAppliesToVideo } from "@/lib/tool-types";
 import { useSession } from "@/providers/session-provider";
 import {
   useReorderProjectTools,
@@ -68,6 +74,32 @@ export function AppliedToolsList() {
   const currentImage = useCurrentImage();
   const imageId = currentImage?._id;
 
+  // Video projects: with a video open, list only the tools that act on it.
+  const isVideo = project.type === "video";
+  const currentVideo = useCurrentVideo();
+  const listedTools =
+    isVideo && currentVideo
+      ? tools.filter((t) => toolAppliesToVideo(t, currentVideo._id))
+      : tools;
+
+  // hover text of a video tool: which video it acts on (and the interval, for trim)
+  function videoToolTitle(tool: (typeof tools)[number]): string | undefined {
+    if (!isVideo) return undefined;
+    const p = tool.params as {
+      videoId?: string;
+      startTime?: number;
+      endTime?: number;
+      count?: number;
+    };
+    if (!p?.videoId) return undefined;
+    const name = project.videos?.find((v) => v._id === p.videoId)?.name ?? "video";
+    if (tool.procedure === "trim") return `${tool.procedure} · ${name} · ${p.startTime}s–${p.endTime}s`;
+    if (tool.procedure === "extract_frames") {
+      return `${tool.procedure} · ${name} · ${p.count} frames, ${p.startTime}s–${p.endTime}s (last step)`;
+    }
+    return `${tool.procedure} · ${name}`;
+  }
+
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   const resultsQueryKey = [
@@ -97,6 +129,22 @@ export function AppliedToolsList() {
       ...t,
       position: index,
     }));
+
+    // UC-VID-003: a video's frame extraction must stay its last step
+    const vid = (t: (typeof tools)[number]) => (t.params as { videoId?: string })?.videoId;
+    const breaksExtraction = withPositions.some(
+      (e, i) =>
+        e.procedure === "extract_frames" &&
+        withPositions.slice(i + 1).some((t) => vid(t) === vid(e)),
+    );
+    if (breaksExtraction) {
+      toast({
+        title: "Can't move this tool",
+        description: "Frame extraction must be the last step for its video.",
+        variant: "destructive",
+      });
+      return;
+    }
 
     // update UI immediately
     setTools(withPositions);
@@ -264,17 +312,22 @@ export function AppliedToolsList() {
         </div>
       </div>
 
-      {tools.length === 0 && (
+      {listedTools.length === 0 && (
         <p className="text-[11px] text-gray-400">
           Nenhuma ferramenta aplicada
         </p>
       )}
 
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-        <SortableContext items={tools.map((t) => t._id)} strategy={verticalListSortingStrategy}>
+        <SortableContext items={listedTools.map((t) => t._id)} strategy={verticalListSortingStrategy}>
           <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
-            {tools.map((tool) => (
-              <SortableToolItem key={tool._id} tool={tool} onRemove={handleRemove} />
+            {listedTools.map((tool) => (
+              <SortableToolItem
+                key={tool._id}
+                tool={tool}
+                onRemove={handleRemove}
+                title={videoToolTitle(tool)}
+              />
             ))}
           </div>
         </SortableContext>

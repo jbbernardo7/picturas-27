@@ -173,6 +173,61 @@ router.get("/:user/process/:advanced_tools", async function (req, res, next) {
 });
 
 
+// ---- Frame extraction quota (UC-VID-003 RN5 / RN8) ----
+// Separate from the advanced operations: one successful extraction request
+// counts as one, whatever the number of frames.
+const DAILY_EXTRACTIONS = {
+  free: Number(process.env.FREE_DAILY_EXTRACT || 5),
+  premium: Number(process.env.PREMIUM_DAILY_EXTRACT || 10),
+};
+
+function todayEntry(user) {
+  const { year, month, day } = get_cur_date();
+  const today = new Date(year, month, day);
+  let op = user.operations.find((o) => o.day.getTime() === today.getTime());
+  if (!op) {
+    user.operations.push({ day: today, processed: 0, extractions: 0 });
+    op = user.operations[user.operations.length - 1];
+  }
+  return op;
+}
+
+function extractionsLeft(user) {
+  const limit = DAILY_EXTRACTIONS[user.type] ?? 0;
+  const { year, month, day } = get_cur_date();
+  const today = new Date(year, month, day);
+  const op = user.operations.find((o) => o.day.getTime() === today.getTime());
+  return Math.max(0, limit - (op?.extractions || 0));
+}
+
+// How many extractions the user can still start today.
+router.get("/:user/extract/check", async function (req, res) {
+  try {
+    const user = await User.getOne(req.params.user);
+    if (!user) return res.status(404).jsonp("Error acquiring user's information.");
+    const left = extractionsLeft(user);
+    return res.status(200).jsonp({ allowed: left > 0, left, limit: DAILY_EXTRACTIONS[user.type] ?? 0 });
+  } catch (err) {
+    console.error("Error in GET /:user/extract/check:", err);
+    return res.status(701).jsonp("Error acquiring user's information.");
+  }
+});
+
+// Count one finished extraction (called only on success).
+router.post("/:user/extract/consume", async function (req, res) {
+  try {
+    const user = await User.getOne(req.params.user);
+    if (!user) return res.status(404).jsonp("Error acquiring user's information.");
+    const op = todayEntry(user);
+    op.extractions = (op.extractions || 0) + 1;
+    await User.update(req.params.user, user);
+    return res.status(200).jsonp({ left: extractionsLeft(user) });
+  } catch (err) {
+    console.error("Error in POST /:user/extract/consume:", err);
+    return res.status(701).jsonp("Error acquiring user's information.");
+  }
+});
+
 // Create a new user
 router.post("/", function (req, res, next) {
   const user = {
@@ -300,6 +355,7 @@ router.put("/:user/process/:advanced_tools", function (req, res, next) {
       let new_op = {
         day: op.day,
         processed: op.processed + op_num,
+        extractions: op.extractions || 0,
       };
 
       user.operations.push(new_op);

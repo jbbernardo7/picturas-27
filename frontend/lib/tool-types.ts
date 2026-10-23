@@ -37,6 +37,35 @@ export interface SaturationToolParams {
   saturationFactor: number; // 0.0 - 2.0 (1.0 normal image)
 }
 
+export interface TrimToolParams {
+  videoId: string; // the video it applies to
+  startTime: number; // seconds
+  endTime: number; // seconds
+}
+
+export interface CompressToolParams {
+  videoId: string; // the video it applies to
+  // light = best quality / bigger file, strong = smallest file / lower quality
+  level: "light" | "medium" | "strong";
+}
+
+// UC-VID-003: where the extracted frames go (always an image project)
+export type FrameDestination =
+  | { mode: "new"; name: string }
+  | { mode: "existing"; projectId: string };
+
+export interface ExtractFramesToolParams {
+  videoId: string; // the video it applies to
+  startTime: number; // seconds, on the video left by the previous tools
+  endTime: number; // seconds (excluded)
+  count: number; // 1..10 registered, 1..20 premium
+  format: "png" | "jpeg";
+  destination?: FrameDestination;
+}
+
+// Frames per extraction by profile (RN1). Same values as the projects service.
+export const MAX_FRAMES: Record<string, number> = { free: 10, premium: 20 };
+
 export type ExpandMode = "reflect" | "edge" | "solid" | "generative";
 
 export type ExpandAiParams = {
@@ -71,7 +100,10 @@ export type ToolParams =
   | ResizeToolParams
   | RotateToolParams
   | SaturationToolParams
+  | CompressToolParams
   | ExpandAiParams
+  | TrimToolParams
+  | ExtractFramesToolParams
   | object;
 
 export type ToolNames =
@@ -92,4 +124,46 @@ export type ToolNames =
   | "obj_ai"
   | "people_ai"
   | "expand_ai"
+  | "trim"
+  | "compress"
+  | "extract_frames"
   | "project";
+
+// ---------------------------------------------------------------------------
+// Video tools
+// ---------------------------------------------------------------------------
+
+// Tools that only work on video projects.
+// Keep in sync with VIDEO_TOOLS in projects/routes/projects.js: the backend rejects
+// any tool that is not allowed for the project's type.
+export const VIDEO_TOOL_NAMES: ToolNames[] = ["trim", "compress", "extract_frames"];
+
+// UC-VID-003: the frame extraction is always the last step of its video's chain.
+export function videoHasExtraction(
+  tools: { procedure: string; params?: unknown }[],
+  videoId: string,
+): boolean {
+  return tools.some(
+    (t) =>
+      t.procedure === "extract_frames" &&
+      (t.params as { videoId?: string } | undefined)?.videoId === videoId,
+  );
+}
+
+// In a video project each tool targets the video that was open in the player
+// (params.videoId). Same rule as toolAppliesTo() in the projects service: old
+// tools without a videoId apply to every video.
+export function toolAppliesToVideo(tool: { params?: unknown }, videoId: string): boolean {
+  const target = (tool.params as { videoId?: string } | undefined)?.videoId;
+  return !target || target === videoId;
+}
+
+// Same rule as toolAllowedFor() in the projects service: video projects only get
+// video tools, image projects get everything else.
+export function isToolAllowedFor(
+  projectType: "image" | "video" | undefined,
+  tool: ToolNames,
+): boolean {
+  const isVideoTool = VIDEO_TOOL_NAMES.includes(tool);
+  return projectType === "video" ? isVideoTool : !isVideoTool;
+}

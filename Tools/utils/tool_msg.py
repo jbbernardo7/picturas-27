@@ -26,6 +26,7 @@ class ToolMSG:
         'obj_ai': 'obj_ai_queue',
         'people_ai': 'people_ai_queue',
         'expand_ai': 'expand_ai_queue',
+        'compress': 'compress_queue',
         'project': 'project_queue'
     }
     
@@ -37,6 +38,9 @@ class ToolMSG:
     
     def read_msg(self, callback):
         self._rabbit_mq.read_rabbit_msg(self._queue, callback)
+
+    def keep_alive(self, time_limit=1):
+        self._rabbit_mq.keep_alive(time_limit)
 
     def send_msg(self, msg_id, resp_msg_id, timestamp, status, processingTime, new_img_uri, type="image", err_code=None, err_msg=None, og_img_uri=None):
 
@@ -85,5 +89,3 @@ class ToolMSG:
         msg = json.dumps(msg)    
             
         self._rabbit_mq.send_rabbit_msg(msg, self._proj_queue)
-        
-    

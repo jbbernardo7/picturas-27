@@ -18,19 +18,36 @@ function pathUidFor(uid: string, ownerId?: string, shareId?: string) {
   return shareId ? ownerId! : uid;
 }
 
+// "image" is the default; old projects have no type stored, treat them as "image"
+export type ProjectType = "image" | "video";
+
 export interface Project {
   _id: string;
   user_id: string;
   name: string;
+  type?: ProjectType;
   version: number;
+}
+
+export interface ProjectVideo {
+  _id: string;
+  name: string;
+  size: number;
+  contentType: string;
+  status: string;
+  url: string;
+  // seconds, measured on upload (0 when unknown)
+  duration?: number;
 }
 
 export interface SingleProject {
   _id: string;
   user_id: string;
   name: string;
+  type?: ProjectType;
   tools: ProjectToolResponse[];
   imgs: ProjectImage[];
+  videos?: ProjectVideo[];
   version: number;
 
 }
@@ -38,6 +55,22 @@ export interface ProjectImage {
   _id: string;
   name: string;
   url: string;
+}
+
+// A finished (edited) video, as listed in the results
+export interface ResultVideo {
+  _id: string;
+  name: string;
+  url: string;
+}
+
+// UC-VID-003: frames of a video stored in an image project
+export interface ResultFrames {
+  _id: string; // the source video
+  projectId: string;
+  ownerId: string;
+  projectName: string | null; // null when that project was deleted
+  count: number;
 }
 
 export interface ProjectImageText {
@@ -179,6 +212,7 @@ export const fetchProjects = async (uid: string, token: string) => {
     _id: p._id,
     user_id: uid,
     name: p.name,
+    type: p.type ?? "image",
     version: p.version, 
   })) as Project[];
 };
@@ -207,7 +241,9 @@ export const fetchProject = async (
     _id: response.data._id,
     user_id: response.data.user_id,
     name: response.data.name,
+    type: response.data.type ?? "image",
     imgs: response.data.imgs,
+    videos: response.data.videos ?? [],
     tools: response.data.tools,
     version: response.data.version,
   } as SingleProject;
@@ -218,15 +254,17 @@ export const addProject = async ({
   token,
   name,
   images = [],
+  type = "image",
 }: {
   uid: string;
   token: string;
   name: string;
   images?: File[];
+  type?: ProjectType;
 }) => {
   const response = await api.post<SingleProject>(
     `/projects/${uid}`,
-    { name },
+    { name, type },
     { headers: { Authorization: `Bearer ${token}` } },
   );
 
@@ -831,6 +869,18 @@ export const fetchProjectResults = async (
       name: string;
       url: string;
     }[];
+    videos?: {
+      og_img_id: string;
+      name: string;
+      url: string;
+    }[];
+    frames?: {
+      og_img_id: string;
+      project_id: string;
+      owner: string;
+      project_name: string | null;
+      count: number;
+    }[];
   }>(`/projects/${pathUid}/${pid}/process/url${query}`, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -866,6 +916,23 @@ export const fetchProjectResults = async (
         }) as ProjectImage,
     ),
     texts: texts,
+    videos: (response.data.videos ?? []).map(
+      (v) =>
+        ({
+          _id: v.og_img_id,
+          name: v.name,
+          url: v.url,
+        }) as ResultVideo,
+    ),
+    frames: (response.data.frames ?? []).map(
+      (f): ResultFrames => ({
+        _id: f.og_img_id,
+        projectId: f.project_id,
+        ownerId: f.owner,
+        projectName: f.project_name,
+        count: f.count,
+      }),
+    ),
   };
 };
 

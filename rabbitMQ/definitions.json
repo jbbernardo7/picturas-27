@@ -40,6 +40,20 @@
             "auto_delete": false,
             "arguments": {}
         },
+        { 
+            "name": "trim_queue", 
+            "vhost": "/", 
+            "durable": true, 
+            "auto_delete": false, 
+            "arguments": {} 
+        },
+        {
+            "name": "extract_frames_queue",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {}
+        },
         {
             "name": "border_queue",
             "vhost": "/",
@@ -160,6 +174,13 @@
             "arguments": {}
         },
         {
+            "name": "compress_queue",
+            "vhost": "/",
+            "durable": true,
+            "auto_delete": false,
+            "arguments": {}
+        },
+        {
             "name": "ws_queue",
             "vhost": "/",
             "durable": true,
@@ -185,6 +206,22 @@
             "destination": "project_queue",
             "destination_type": "queue",
             "routing_key": "project_queue",
+            "arguments": {}
+        },
+        { 
+            "source": "picturas",
+            "vhost": "/", 
+            "destination": "trim_queue",
+            "destination_type": "queue", 
+            "routing_key": "trim_queue", 
+            "arguments": {} 
+        },
+        {
+            "source": "picturas",
+            "vhost": "/",
+            "destination": "extract_frames_queue",
+            "destination_type": "queue",
+            "routing_key": "extract_frames_queue",
             "arguments": {}
         },
         {
@@ -321,6 +358,14 @@
             "destination": "watermark_queue",
             "destination_type": "queue",
             "routing_key": "watermark_queue",
+            "arguments": {}
+        },
+        {
+            "source": "picturas",
+            "vhost": "/",
+            "destination": "compress_queue",
+            "destination_type": "queue",
+            "routing_key": "compress_queue",
             "arguments": {}
         },
         {

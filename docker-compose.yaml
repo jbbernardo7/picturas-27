@@ -60,6 +60,7 @@ services:
       server -dir=/data -s3 -s3.port=9000
       -s3.encryptVolumeData
       -master.volumeSizeLimitMB=1024
+      -volume.max=300
     ports:
       - "9000:9000"
       - "9090:8888"
@@ -69,6 +70,11 @@ services:
       AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-admin123}
       # Passphrase protecting the key-encryption-key used for encryption at rest.
       WEED_S3_SSE_KEK_PASSPHRASE: ${S3_KEK_PASSPHRASE:-picturas-kek-passphrase-change-me}
+      # Every user has a bucket (= a collection), and each new collection grows 7 volumes
+      # by default. With the default volume.max (from free disk) only a few users fit,
+      # then uploads fail with "No writable volumes". One volume per new collection and
+      # a higher volume.max fix it; volumes are not preallocated, so this costs no disk.
+      WEED_MASTER_VOLUME_GROWTH_COPY_1: "1"
     volumes:
       - seaweedfs_data:/data
     networks:
@@ -86,6 +92,8 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-admin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-admin123}
       FRONTEND_URL: "https://localhost:8080"
+      MAX_VIDEO_SIZE_MB: "500"
+      MAX_VIDEO_DURATION_MIN: "10"
     networks:
       - elk
 
@@ -313,7 +321,7 @@ services:
       - image_data:/app/images
 
   people_ai_tool:
-    build: 
+    build:
       context: ./Tools
       dockerfile: people_ai/Dockerfile
     networks:
@@ -326,7 +334,7 @@ services:
       - image_data:/app/images
 
   obj_ai_tool:
-    build: 
+    build:
       context: ./Tools
       dockerfile: obj_ai/Dockerfile
     networks:
@@ -343,6 +351,39 @@ services:
       context: ./Tools
       dockerfile: resize/Dockerfile
     restart: on-failure
+    networks:
+      - elk
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - image_data:/app/images
+
+  trim_tool:
+    build:
+      context: ./Tools
+      dockerfile: trim/Dockerfile
+    restart: on-failure:3
+    cpus: "2"
+    mem_limit: 2g
+    environment:
+      TRIM_PRESET: veryfast
+      TRIM_THREADS: "2"
+    networks:
+      - elk
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - image_data:/app/images
+
+  extract_frames_tool:
+    build:
+      context: ./Tools
+      dockerfile: extract_frames/Dockerfile
+    restart: on-failure:3
+    cpus: "1"
+    mem_limit: 1g
     networks:
       - elk
     depends_on:
@@ -439,7 +480,25 @@ services:
       - RABBITMQ_USER=user
       - RABBITMQ_PASS=password
       - GEN_EXPAND_URL=http://generative-mock:7860
-      
+
+  compress_tool:
+    build:
+      context: ./Tools
+      dockerfile: compress/Dockerfile
+    restart: on-failure:3
+    cpus: "2"
+    mem_limit: 2g
+    environment:
+      COMPRESS_PRESET: veryfast
+      COMPRESS_THREADS: "2"
+    networks:
+      - elk
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - image_data:/app/images
+
   watermark_tool_ms:
     image: prcsousa/picturas-watermark-tool-ms:latest
     restart: always
@@ -465,9 +524,11 @@ services:
       - elk
     environment:
     - NEXT_PUBLIC_API_BASE_URL=/api-gateway/
+    - WATCHPACK_POLLING=true
     volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      - ./frontend:/usr/src/app
+      - /usr/src/app/node_modules
+      - /usr/src/app/.next
 
   ws_gateway:
     build: ./wsGateway

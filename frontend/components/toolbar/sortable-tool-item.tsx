@@ -4,7 +4,15 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { X, GripVertical } from "lucide-react";
 
-export function SortableToolItem({ tool, onRemove }: { tool: any, onRemove: (id: string) => void }) {
+export function SortableToolItem({
+  tool,
+  onRemove,
+  title,
+}: {
+  tool: any;
+  onRemove: (id: string) => void;
+  title?: string; // hover text (video tools: the video they act on)
+}) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: tool._id });
 
   return (
@@ -18,7 +26,7 @@ export function SortableToolItem({ tool, onRemove }: { tool: any, onRemove: (id:
     >
       <div className="flex items-center gap-2 min-w-0">
         <GripVertical className="w-3 h-3 cursor-grab" {...attributes} {...listeners} />
-        <span className="max-w-[4.5rem] truncate text-[11px]">
+        <span className="max-w-[4.5rem] truncate text-[11px]" title={title}>
             {tool.procedure}
         </span>     
       </div>

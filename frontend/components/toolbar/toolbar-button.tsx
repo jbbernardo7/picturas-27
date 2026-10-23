@@ -41,7 +41,15 @@ interface ToolbarButtonProps {
   tool: Omit<ProjectTool, "position">;
   children?: React.ReactNode;
   noParams?: boolean;
+  // tools that have no quick preview (video tools): hides the Preview button
+  noPreview?: boolean;
+  // which saved tool this button edits; by default the one with the same procedure.
+  // Video tools pass one that also matches the open video.
+  matchTool?: (t: ProjectToolResponse) => boolean;
   onDefault?: () => void;
+  // called on Save instead of saving right away (e.g. to ask something first);
+  // `save` stores the tool with the extra params merged in
+  onBeforeSave?: (save: (extraParams?: Record<string, unknown>) => void) => void;
 }
 
 export function ToolbarButton({
@@ -56,7 +64,10 @@ export function ToolbarButton({
   tool,
   children,
   noParams = false,
+  noPreview = false,
+  matchTool,
   onDefault = () => {},
+  onBeforeSave,
 }: ToolbarButtonProps) {
   const router = useRouter();
   const session = useSession();
@@ -97,10 +108,12 @@ export function ToolbarButton({
     return false;
   };
 
-  const variant =
-    project.tools.find((t) => t.procedure === tool.procedure) !== undefined
-      ? "default"
-      : "outline";
+  const isThisTool = useMemo(
+    () => matchTool ?? ((t: ProjectToolResponse) => t.procedure === tool.procedure),
+    [matchTool, tool.procedure],
+  );
+
+  const variant = project.tools.find(isThisTool) !== undefined ? "default" : "outline";
 
   const currentImage = useCurrentImage();
 
@@ -177,17 +190,18 @@ export function ToolbarButton({
     );
   }
 
-  function handleAddTool(runPreview?: boolean) {
+  function handleAddTool(runPreview?: boolean, extraParams?: Record<string, unknown>) {
     
     if (!canEdit) return;
+    const params = extraParams ? { ...tool.params, ...extraParams } : tool.params;
     const afterSuccess = () => {
       setHasUnsavedChanges(false); // acabou de guardar
-      if (runPreview) handlePreview();
+      if (runPreview && !noPreview) handlePreview();
     };
 
     if (prevTool) {
       updateTool.mutate(
-        { toolId: prevTool._id, toolParams: tool.params, projectVersion: project.version },
+        { toolId: prevTool._id, toolParams: params, projectVersion: project.version },
         {
           onSuccess: afterSuccess,
           onError: (error) => {
@@ -199,7 +213,7 @@ export function ToolbarButton({
       );
     } else {
       addTool.mutate(
-        { tool: { ...tool, position: project.tools.length }, projectVersion: project.version },
+        { tool: { ...tool, params, position: project.tools.length }, projectVersion: project.version },
         {
           onSuccess: afterSuccess,
           onError: (error) => {
@@ -269,8 +283,8 @@ export function ToolbarButton({
   }, [socket.data, preview]);
 
   useEffect(() => {
-    setPrevTool(project.tools.find((t) => t.procedure === tool.procedure));
-  }, [project.tools, tool.procedure]);
+    setPrevTool(project.tools.find(isThisTool));
+  }, [project.tools, isThisTool]);
 
   const locked = !canEdit;
 
@@ -363,17 +377,24 @@ export function ToolbarButton({
             Default
           </Button>
 
-          <Button
-            variant="outline"
-            onClick={() => handleAddTool(true)}
-            className="h-6 text-xs"
-            disabled={isDefault}
-          >
-            Preview
-          </Button>
+          {!noPreview && (
+            <Button
+              variant="outline"
+              onClick={() => handleAddTool(true)}
+              className="h-6 text-xs"
+              disabled={isDefault}
+            >
+              Preview
+            </Button>
+          )}
 
           <Button
-            onClick={() => handleAddTool(false)}
+            onClick={() => {
+              if (onBeforeSave) {
+                setOpen(false);
+                onBeforeSave((extra) => handleAddTool(false, extra));
+              } else handleAddTool(false);
+            }}
             disabled={isDefault}
             className="h-6 text-xs w-full"
           >

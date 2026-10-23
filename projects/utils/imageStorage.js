@@ -47,4 +47,14 @@ async function copy_image(userId, projectId, fromStage, toStage, fileName) {
   );
 }
 
-module.exports = { get_image_internal_url, get_image_public_url, post_image, delete_image, copy_image };
+async function init_video(user, project, contentType, size) {
+  return await axios.post(`${img_storage_ms}/video/init`, {
+    userId: user, projectId: project, stage: "src", contentType, size,
+  });
+}
+
+async function complete_video(bucket, key, uploadId, parts) {
+  return await axios.post(`${img_storage_ms}/video/complete`, { bucket, key, uploadId, parts });
+}
+
+module.exports = { get_image_internal_url, get_image_public_url, post_image, delete_image, copy_image, init_video, complete_video };
